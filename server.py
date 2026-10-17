@@ -72,6 +72,9 @@ STATIC_DIR    = Path(__file__).parent / 'static'
 POSE_ARMED_THRESHOLD = 0.75   # show "armed" indicator on phone
 POSE_FIRE_THRESHOLD  = 0.85   # actually fire the shot
 
+# Seconds of continuous finger-gun aim needed to capture a flag tag
+FLAG_CAPTURE_DWELL   = 1.5
+
 # How often (seconds) we push state to the host dashboard
 STATE_BROADCAST_INTERVAL = 0.5
 
@@ -125,20 +128,19 @@ def _process_frame(jpeg_bytes: bytes) -> dict:
     rgb  = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # Run detectors (thread-local instances)
+    # Run detectors (thread-local instances).
+    # No role filter — we detect player bibs, flag tags, AND base tags.
+    # The WebSocket handler branches on tag['role'].
     hand_result = _hand_detector().process(rgb)
-    tag         = _tag_detector().best_centered_tag(gray, w, h, role_filter='player')
+    tag         = _tag_detector().best_centered_tag(gray, w, h)
 
     return {
-        'pose':        hand_result['confidence'],
-        'armed':       hand_result['armed'],
-        'detected':    hand_result['detected'],
-        'landmarks':   hand_result['landmarks'],
-        'criteria':    hand_result['criteria'],
-        'target_id':   tag['id']      if tag else None,
-        'tag_center':  tag['center']  if tag else None,
-        'tag_corners': tag['corners'] if tag else None,
-        'tag_margin':  tag['margin']  if tag else None,
+        'pose':      hand_result['confidence'],
+        'armed':     hand_result['armed'],
+        'detected':  hand_result['detected'],
+        'landmarks': hand_result['landmarks'],
+        'criteria':  hand_result['criteria'],
+        'tag':       tag,   # full dict {id, role, center, corners, margin} or None
     }
 
 
@@ -167,6 +169,10 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
 
     player       = None
     loop         = asyncio.get_event_loop()
+
+    # Per-connection flag-capture dwell state
+    # { 'flag_id': int | None, 'aim_start': float }
+    aim_state = {'flag_id': None, 'aim_start': 0.0}
 
     log.info(f'Phone connected from {request.remote}')
 
@@ -248,51 +254,102 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     log.debug(f'Frame decode error from player {player.player_id}')
                     continue
 
-                # ── Shot logic ──────────────────────────────────────────────
-                shot_event   = None
-                pose         = det['pose']
-                target_id    = det['target_id']
-                should_fire  = (
-                    pose      >= POSE_FIRE_THRESHOLD
-                    and target_id is not None
-                    and player.can_shoot()
-                )
+                # ── Interpret detection results ─────────────────────────────
+                pose = det['pose']
+                tag  = det['tag']           # full tag dict or None
+                role = tag['role'] if tag else None
 
-                if should_fire:
-                    shot_event = await game.process_shot(player.player_id, target_id)
+                armed = pose >= POSE_ARMED_THRESHOLD
+                fired = pose >= POSE_FIRE_THRESHOLD
 
-                if shot_event:
-                    log.info(
-                        f'SHOT  player {player.player_id} → player {target_id}'
-                        f'  (pose={pose:.2f})'
-                    )
-                    # Notify the victim
-                    victim = game.players.get(target_id)
-                    if victim and victim.ws and not victim.ws.closed:
-                        try:
-                            await victim.ws.send_json(shot_event)
-                        except Exception:
-                            pass
-                    # Notify host
-                    await _broadcast_host(shot_event)
+                shot_event      = None
+                capture_event   = None
+                respawn_ok      = False
+                capture_progress = 0.0   # 0.0–1.0, only relevant for 'flag' role
 
-                # ── Reply to this phone ─────────────────────────────────────
+                # ── Branch on what the camera sees ──────────────────────────
+                if tag and role == 'player' and player.alive and fired:
+                    # ── SHOOT a player ──────────────────────────────────────
+                    shot_event = await game.process_shot(player.player_id, tag['id'])
+                    if shot_event:
+                        log.info(
+                            f'SHOT  player {player.player_id} -> player {tag["id"]}'
+                            f'  (pose={pose:.2f})'
+                        )
+                        victim = game.players.get(tag['id'])
+                        if victim and victim.ws and not victim.ws.closed:
+                            try:
+                                await victim.ws.send_json(shot_event)
+                            except Exception:
+                                pass
+                        await _broadcast_host(shot_event)
+                    aim_state = {'flag_id': None, 'aim_start': 0.0}
+
+                elif tag and role == 'flag' and player.alive and armed:
+                    # ── CAPTURE a flag (dwell mechanic) ─────────────────────
+                    flag_id = tag['id'] - 200   # tag 200 -> flag 0, etc.
+                    if aim_state['flag_id'] == flag_id:
+                        # Continuing to aim at the same flag
+                        elapsed          = time.time() - aim_state['aim_start']
+                        capture_progress = min(1.0, elapsed / FLAG_CAPTURE_DWELL)
+                        if elapsed >= FLAG_CAPTURE_DWELL:
+                            await game.capture_flag(flag_id, player.team)
+                            capture_event = {
+                                'type':    'flag_captured',
+                                'flag_id': flag_id,
+                                'team':    player.team,
+                                'by':      player.player_id,
+                            }
+                            log.info(
+                                f'FLAG {flag_id} captured by {player.team} '
+                                f'(player {player.player_id})'
+                            )
+                            await _broadcast_host(capture_event)
+                            aim_state = {'flag_id': None, 'aim_start': 0.0}
+                    else:
+                        # Started aiming at a new flag — reset dwell timer
+                        aim_state = {'flag_id': flag_id, 'aim_start': time.time()}
+                        capture_progress = 0.0
+
+                elif tag and role == 'base' and not player.alive and armed:
+                    # ── RESPAWN at base ──────────────────────────────────────
+                    respawn_ok = await game.request_respawn(player.player_id, tag['id'])
+                    if respawn_ok:
+                        log.info(f'Player {player.player_id} respawned at base {tag["id"]}')
+                        await _broadcast_host({
+                            'type':      'player_respawned',
+                            'player_id': player.player_id,
+                        })
+                    aim_state = {'flag_id': None, 'aim_start': 0.0}
+
+                else:
+                    # Not aiming at anything actionable — reset flag dwell
+                    if role != 'flag':
+                        aim_state = {'flag_id': None, 'aim_start': 0.0}
+
+                # ── Reply to this phone ──────────────────────────────────────
                 alive = player.alive
                 await ws.send_json({
-                    'type':        'frame_result',
-                    # Detection
-                    'pose':        round(pose, 3),
-                    'armed':       pose >= POSE_ARMED_THRESHOLD,
-                    'shot_fired':  shot_event is not None,
-                    'target_id':   target_id,
-                    'landmarks':   det['landmarks'],
-                    'tag_corners': det['tag_corners'],
+                    'type':             'frame_result',
+                    # Hand detection
+                    'pose':             round(pose, 3),
+                    'armed':            armed,
+                    # What we're aiming at
+                    'aiming_role':      role,        # 'player'|'flag'|'base'|None
+                    'aiming_tag_id':    tag['id']      if tag else None,
+                    'tag_corners':      tag['corners'] if tag else None,
+                    'landmarks':        det['landmarks'],
+                    # Action results
+                    'shot_fired':       shot_event    is not None,
+                    'capture_event':    capture_event,
+                    'capture_progress': round(capture_progress, 3),
+                    'respawned':        respawn_ok,
                     # Player status
-                    'alive':       alive,
-                    'respawn_at':  player.respawn_at if not alive else None,
-                    'remaining':   round(player.seconds_until_respawn(), 1),
+                    'alive':            alive,
+                    'respawn_at':       player.respawn_at if not alive else None,
+                    'remaining':        round(player.seconds_until_respawn(), 1),
                     # Scores
-                    'scores':      game.scores(),
+                    'scores':           game.scores(),
                 })
                 continue
 

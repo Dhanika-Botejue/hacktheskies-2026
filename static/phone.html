@@ -39,8 +39,10 @@
              justify-content:center;pointer-events:none;z-index:5}
     #reticle svg{width:90px;height:90px;color:#fff;opacity:.45;
                  transition:opacity .15s,color .15s,filter .15s}
-    #reticle svg.armed {opacity:.85;color:#facc15;filter:drop-shadow(0 0 8px #facc15)}
-    #reticle svg.locked{opacity:1; color:#ef4444;filter:drop-shadow(0 0 14px #ef4444)}
+    #reticle svg.armed     { opacity:.85; color:#facc15; filter:drop-shadow(0 0 8px #facc15) }
+    #reticle svg.locked    { opacity:1;   color:#ef4444; filter:drop-shadow(0 0 14px #ef4444) }
+    #reticle svg.capturing { opacity:1;   color:#3b82f6; filter:drop-shadow(0 0 14px #3b82f6) }
+    #reticle svg.base      { opacity:1;   color:#22c55e; filter:drop-shadow(0 0 14px #22c55e) }
 
     /* Flash */
     #flash{position:absolute;inset:0;background:rgba(239,68,68,.6);
@@ -51,7 +53,9 @@
          padding:10px 16px 20px;background:rgba(0,0,0,.7);z-index:10}
     #tgt{text-align:center;font-size:.9rem;font-weight:600;padding:6px 12px;
          border-radius:8px;background:#1e293b;margin-bottom:8px}
-    #tgt.locked{background:#7f1d1d;color:#fca5a5}
+    #tgt.locked    {background:#7f1d1d;color:#fca5a5}
+    #tgt.capturing {background:#1e3a5f;color:#93c5fd}
+    #tgt.base      {background:#14532d;color:#86efac}
     .pose-row{display:flex;align-items:center;gap:10px}
     .pose-lbl{font-size:.75rem;opacity:.55;white-space:nowrap;min-width:72px}
     .pose-bg{flex:1;height:8px;background:#1e293b;border-radius:4px;overflow:hidden}
@@ -127,7 +131,7 @@
 
   <div id="respawn">
     <h2>💀 You were hit!</h2>
-    <p>Run back to your base and scan it to respawn</p>
+    <p>Aim your finger gun at your team's<br><strong>base tag</strong> to respawn</p>
     <div id="rtimer">—</div>
   </div>
 
@@ -271,14 +275,16 @@ function handleMessage(d) {
     $idle.classList.remove('show');
 
     alive     = d.alive;
-    respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;  // convert to ms
+    respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;
 
     updatePoseBar(d.pose, d.armed);
-    updateTarget(d.target_id);
-    updateReticle(d.armed, d.target_id !== null);
+    updateTarget(d.aiming_role, d.aiming_tag_id);
+    updateReticle(d.aiming_role, d.armed, d.capture_progress);
     updateScores(d.scores);
 
-    if (d.shot_fired) triggerShotFlash();
+    if (d.shot_fired)    triggerShotFlash();
+    if (d.capture_event) triggerCaptureFlash(d.capture_event);
+    if (d.respawned)     { alive = true; respawnAt = null; }
 
     if (!alive) {
       $respawn.classList.add('show');
@@ -286,7 +292,7 @@ function handleMessage(d) {
       $respawn.classList.remove('show');
     }
 
-    drawOverlay(d.landmarks, d.tag_corners);
+    drawOverlay(d.landmarks, d.tag_corners, d.aiming_role, d.capture_progress);
   }
 
   else if (d.type === 'shot_event') {
@@ -295,12 +301,6 @@ function handleMessage(d) {
     respawnAt = d.respawn_at * 1000;
     $respawn.classList.add('show');
     triggerShotFlash();
-  }
-
-  else if (d.type === 'respawned') {
-    alive = true;
-    respawnAt = null;
-    $respawn.classList.remove('show');
   }
 
   else if (d.type === 'idle') {
@@ -317,22 +317,46 @@ function handleMessage(d) {
 
 // ─── UI helpers ───────────────────────────────────────────────────────────
 function updatePoseBar(pose, armed) {
-  $poseFill.style.width     = (pose * 100).toFixed(1) + '%';
-  $poseFill.style.background = armed ? '#ef4444' : '#22c55e';
+  $poseFill.style.width      = (pose * 100).toFixed(1) + '%';
+  $poseFill.style.background = armed ? '#facc15' : '#22c55e';
 }
 
-function updateTarget(targetId) {
-  if (targetId !== null) {
-    $tgt.textContent = `🎯 Target: Player ${targetId}`;
-    $tgt.className   = 'locked';
-  } else {
-    $tgt.textContent = 'No target in frame';
+function updateTarget(role, tagId) {
+  if (!role || tagId === null) {
+    $tgt.textContent = 'Nothing in frame';
     $tgt.className   = '';
+    return;
   }
+  const labels = {
+    player: `🎯 AIM: Player ${tagId}  — shoot!`,
+    flag:   `🚩 AIM: Flag ${tagId - 200}  — hold to capture!`,
+    base:   `🏠 AIM: Base tag  — ${alive ? 'already alive' : 'hold to respawn!'}`,
+  };
+  $tgt.textContent = labels[role] || `Tag ${tagId}`;
+  $tgt.className   = (role === 'player' && !alive) ? '' :
+                     (role === 'player') ? 'locked' :
+                     (role === 'flag')   ? 'capturing' :
+                     (role === 'base')   ? 'base' : '';
 }
 
-function updateReticle(armed, locked) {
-  $rtcl.className = locked && armed ? 'locked' : (armed ? 'armed' : '');
+// Reticle colour key:
+//   nothing / not armed → grey dim
+//   armed, no tag       → yellow
+//   armed + player tag  → red  "locked on player"
+//   armed + flag tag    → blue "capturing"
+//   armed + base tag    → green "respawning"
+function updateReticle(role, armed, captureProgress) {
+  let cls = '';
+  if (armed) {
+    if      (role === 'player') cls = 'locked';
+    else if (role === 'flag')   cls = 'capturing';
+    else if (role === 'base')   cls = 'base';
+    else                        cls = 'armed';
+  }
+  $rtcl.className = cls;
+
+  // Capture arc — draw on the capture-arc canvas
+  drawCaptureArc(captureProgress || 0, role === 'flag' && armed);
 }
 
 function updateScores(s) {
@@ -341,13 +365,28 @@ function updateScores(s) {
 }
 
 function triggerShotFlash() {
-  $flash.style.opacity = '1';
-  setTimeout(() => { $flash.style.opacity = '0'; }, 200);
+  $flash.style.background = 'rgba(239,68,68,0.6)';
+  $flash.style.opacity    = '1';
+  setTimeout(() => { $flash.style.opacity = '0'; }, 220);
   $shotLog.textContent = 'SHOT FIRED  ' + new Date().toLocaleTimeString();
 }
 
-// ─── Canvas overlay (landmarks + tag box) ────────────────────────────────
-function drawOverlay(landmarks, tagCorners) {
+function triggerCaptureFlash(ev) {
+  $flash.style.background = 'rgba(59,130,246,0.5)';
+  $flash.style.opacity    = '1';
+  setTimeout(() => { $flash.style.opacity = '0'; }, 400);
+  $shotLog.textContent = `FLAG ${ev.flag_id} CAPTURED by ${ev.team}!  ${new Date().toLocaleTimeString()}`;
+}
+
+// ─── Capture arc overlay ──────────────────────────────────────────────────
+// Drawn on the same overlay canvas, centred on screen
+function drawCaptureArc(progress, visible) {
+  // drawn as part of drawOverlay — stored globally for compositing
+  window._captureProgress = visible ? progress : 0;
+}
+
+// ─── Canvas overlay (landmarks + tag box + capture arc) ──────────────────
+function drawOverlay(landmarks, tagCorners, role, captureProgress) {
   ctx.clearRect(0, 0, $ov.width, $ov.height);
   const w = $ov.width, h = $ov.height;
 
@@ -361,21 +400,26 @@ function drawOverlay(landmarks, tagCorners) {
       ctx.arc(x * w, y * h, 4, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Connect index finger chain (5-6-7-8)
-    const idxChain = [5, 6, 7, 8];
+    // Index finger chain 5→6→7→8
+    const chain = [5, 6, 7, 8];
     ctx.beginPath();
-    for (let i = 0; i < idxChain.length - 1; i++) {
-      const [x1,y1] = landmarks[idxChain[i]];
-      const [x2,y2] = landmarks[idxChain[i+1]];
-      ctx.moveTo(x1*w, y1*h);
-      ctx.lineTo(x2*w, y2*h);
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [x1, y1] = landmarks[chain[i]];
+      const [x2, y2] = landmarks[chain[i + 1]];
+      ctx.moveTo(x1 * w, y1 * h);
+      ctx.lineTo(x2 * w, y2 * h);
     }
     ctx.stroke();
   }
 
-  // AprilTag bounding box
+  // Tag bounding box — colour by role
   if (tagCorners) {
-    ctx.strokeStyle = 'rgba(239,68,68,0.9)';
+    const colours = {
+      player: 'rgba(239,68,68,0.9)',     // red
+      flag:   'rgba(59,130,246,0.9)',     // blue
+      base:   'rgba(34,197,94,0.9)',      // green
+    };
+    ctx.strokeStyle = colours[role] || 'rgba(148,163,184,0.7)';
     ctx.lineWidth   = 3;
     ctx.beginPath();
     for (let i = 0; i < 4; i++) {
@@ -385,13 +429,35 @@ function drawOverlay(landmarks, tagCorners) {
     ctx.closePath();
     ctx.stroke();
   }
+
+  // Capture progress arc (centred, shown when aiming at flag)
+  const cp = captureProgress || 0;
+  if (cp > 0 && role === 'flag') {
+    const cx = w / 2, cy = h / 2, r = 52;
+    // Background ring
+    ctx.strokeStyle = 'rgba(59,130,246,0.25)';
+    ctx.lineWidth   = 8;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    // Progress arc
+    ctx.strokeStyle = 'rgba(59,130,246,0.95)';
+    ctx.lineWidth   = 8;
+    ctx.lineCap     = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + cp * Math.PI * 2);
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
 }
 
 // ─── Respawn timer display ────────────────────────────────────────────────
 function tickRespawn() {
-  if (respawnAt) {
+  if (!alive && respawnAt) {
     const secs = Math.max(0, Math.ceil((respawnAt - Date.now()) / 1000));
-    $rtimer.textContent = secs > 0 ? secs : '→ scan base!';
+    $rtimer.textContent = secs > 0 ? `${secs}s` : 'Ready!';
+  } else if (!alive) {
+    $rtimer.textContent = 'Ready!';
   }
 }
 setInterval(tickRespawn, 500);
@@ -401,3 +467,4 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 </script>
 </body>
 </html>
+

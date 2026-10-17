@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Host Map</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="host">
+    <aside class="side">
+      <div>
+        <h2><span id="conn" class="dot"></span>Map tools</h2>
+        <div class="tools">
+          <button data-tool="move" title="Drag to pan (M)">Move</button>
+          <button data-tool="wall" title="Draw walls (W)">Wall</button>
+          <button data-tool="erase" title="Delete walls (E)">Erase</button>
+          <button data-tool="scale" title="Set real-world scale (S)">Scale</button>
+          <button data-tool="place" title="Place selected player (P)">Place</button>
+          <button id="fit" title="Fit map to window (F)">Fit</button>
+        </div>
+        <p id="hint" class="hint"></p>
+      </div>
+
+      <div>
+        <h2>Floor plan</h2>
+        <div class="row">
+          <button id="upload">Upload image</button>
+          <button id="clearImage">Remove</button>
+        </div>
+        <input id="file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <p class="muted" id="mapInfo" style="font-size:12px;margin:8px 0 0"></p>
+        <div class="row" style="margin-top:8px">
+          <button id="undo" title="Cmd/Ctrl+Z">Undo</button>
+          <button id="clearWalls">Clear walls</button>
+        </div>
+      </div>
+
+      <div>
+        <h2>Players</h2>
+        <div id="players" class="players"><p class="muted">No phones connected yet.</p></div>
+      </div>
+
+      <div>
+        <h2>Debug</h2>
+        <label class="check"><input type="checkbox" id="showParticles" checked> Show particles</label>
+        <label class="check"><input type="checkbox" id="showTruth" checked> Show simulator ground truth</label>
+      </div>
+    </aside>
+    <main class="stage"><canvas id="map"></canvas></main>
+  </div>
+  <script type="module" src="js/host.js"></script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <title>Camera Trail Test</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+    .in-ar #overlay { background: transparent; }
+    .view { flex: 1; position: relative; min-height: 0; }
+    .controls { padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); }
+    .track { position: absolute; top: 10px; left: 10px; right: 10px; border-radius: 8px; padding: 8px 10px; text-align: center; font-weight: 600; }
+    .track.ok { background: rgba(118,176,65,.85); color: #000; }
+    .track.lost { background: rgba(255,82,82,.9); color: #000; }
+    .startPanel { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 24px; background: var(--bg); }
+  </style>
+</head>
+<body>
+  <div id="overlay" class="phone">
+    <div class="stats">
+      <div><span>Distance</span><b id="dist">0.0 m</b></div>
+      <div><span>Speed</span><b id="speed">0.0 m/s</b></div>
+      <div><span>Heading</span><b id="heading">–</b></div>
+    </div>
+    <div class="view">
+      <canvas id="trail"></canvas>
+      <div id="track" class="track" style="display:none"></div>
+      <div id="startPanel" class="startPanel">
+        <h1 style="margin:0">Camera trail test</h1>
+        <p class="muted" style="margin:0">Uses ARCore (camera + motion sensors) to track where you walk. Hold or strap the phone upright on your chest with the back camera facing forward. "Up" on the trail is the direction you face when tracking starts.</p>
+        <p class="muted" style="margin:0">Android + Chrome only for now. Tracking works best with light and textured surroundings; blank walls, darkness and people filling the view make it lose track.</p>
+        <button id="start" class="big active">Start camera tracking</button>
+        <p id="err" class="err"></p>
+      </div>
+    </div>
+    <div class="controls row">
+      <button id="reset">Reset path</button>
+      <button id="follow" class="active">Follow</button>
+      <button id="stop">Stop</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { TrailView } from './js/trailview.js';
+    import { yawFromQuaternion } from './js/pdr.js';
+
+    const $ = (id) => document.getElementById(id);
+    const DEG = Math.PI / 180;
+    const trailView = new TrailView($('trail'));
+    trailView.background = 'rgba(20,22,26,0.82)'; // camera shows faintly behind the trail
+
+    let session = null, refSpace = null, gl = null;
+    let raw = null;      // latest pose in AR space: { x, z, h }
+    let origin = null;   // pose that defines the trail's start and "up"
+    let path = [], pos = { x: 0, y: 0 }, heading = null;
+    let distance = 0, speed = 0, lastSample = null;
+    let tracking = false, lostSince = null;
+
+    function reset() {
+      if (!raw) return;
+      origin = { ...raw };
+      path = [{ x: 0, y: 0 }];
+      pos = { x: 0, y: 0 };
+      distance = 0;
+      speed = 0;
+      lastSample = null;
+    }
+
+    function update(t) {
+      // Rotate AR space so the starting direction points up on the trail.
+      const dx = raw.x - origin.x, dz = raw.z - origin.z, phi = -origin.h * DEG;
+      pos = { x: dx * Math.cos(phi) - dz * Math.sin(phi), y: dx * Math.sin(phi) + dz * Math.cos(phi) };
+      heading = (raw.h - origin.h + 360) % 360;
+
+      const last = path[path.length - 1];
+      const moved = Math.hypot(pos.x - last.x, pos.y - last.y);
+      if (moved > 0.1) { path.push(pos); distance += moved; }
+
+      if (!lastSample) lastSample = { t, p: pos };
+      else if (t - lastSample.t > 300) {
+        const v = Math.hypot(pos.x - lastSample.p.x, pos.y - lastSample.p.y) / ((t - lastSample.t) / 1000);
+        speed = speed * 0.6 + v * 0.4;
+        lastSample = { t, p: pos };
+      }
+    }
+
+    function onFrame(t, frame) {
+      session.requestAnimationFrame(onFrame);
+      const layer = session.renderState.baseLayer;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      const pose = frame.getViewerPose(refSpace);
+      tracking = !!pose && !pose.emulatedPosition;
+      if (pose) {
+        const p = pose.transform.position;
+        raw = { x: p.x, z: p.z, h: yawFromQuaternion(pose.transform.orientation) };
+        if (!origin && tracking) reset();
+        if (origin) update(t);
+      }
+
+      if (tracking) lostSince = null;
+      else if (lostSince == null) lostSince = t;
+      const banner = $('track');
+      banner.style.display = '';
+      if (!origin) { banner.className = 'track lost'; banner.textContent = 'Starting tracking… move the phone slowly'; }
+      else if (!tracking) { banner.className = 'track lost'; banner.textContent = `Tracking lost ${((t - lostSince) / 1000).toFixed(0)} s — point at something with texture`; }
+      else { banner.className = 'track ok'; banner.textContent = 'Tracking'; }
+
+      $('dist').textContent = `${distance.toFixed(1)} m`;
+      $('speed').textContent = `${speed.toFixed(1)} m/s`;
+      if (heading != null) $('heading').textContent = `${Math.round(heading)}°`;
+      trailView.draw(path.length ? path : [pos], pos, heading);
+    }
+
+    async function unsupportedReason() {
+      if (!window.isSecureContext) return 'Open this page over https://.';
+      if (!navigator.xr) return 'This browser has no WebXR. Use Chrome on an Android phone.';
+      if (!(await navigator.xr.isSessionSupported('immersive-ar'))) {
+        return 'AR is not available here. Needs Chrome on Android with "Google Play Services for AR" installed (it installs from the Play Store).';
+      }
+      return null;
+    }
+    unsupportedReason().then((why) => { if (why) { $('err').textContent = why; $('start').disabled = true; } });
+
+    $('start').addEventListener('click', async () => {
+      try {
+        session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['local'],
+          optionalFeatures: ['dom-overlay'],
+          domOverlay: { root: $('overlay') },
+        });
+        gl = document.createElement('canvas').getContext('webgl', { xrCompatible: true });
+        await session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+        refSpace = await session.requestReferenceSpace('local');
+      } catch (e) {
+        $('err').textContent = `Could not start AR: ${e.message}`;
+        session?.end();
+        return;
+      }
+      session.addEventListener('end', () => {
+        session = null;
+        document.body.classList.remove('in-ar');
+        $('startPanel').style.display = '';
+        $('track').style.display = 'none';
+      });
+      origin = raw = null;
+      document.body.classList.add('in-ar');
+      $('startPanel').style.display = 'none';
+      session.requestAnimationFrame(onFrame);
+    });
+
+    $('reset').addEventListener('click', reset);
+    $('stop').addEventListener('click', () => session?.end());
+    $('follow').addEventListener('click', () => {
+      trailView.follow = !trailView.follow;
+      $('follow').classList.toggle('active', trailView.follow);
+    });
+  </script>
+</body>
+</html>

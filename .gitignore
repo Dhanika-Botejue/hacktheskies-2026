@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Game server runtime data (map, uploaded floor plan, certs)
+data/

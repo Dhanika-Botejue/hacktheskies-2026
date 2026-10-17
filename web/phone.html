@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Player</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="root" class="phone">
+    <div id="setup" class="setup">
+      <h1>Join game</h1>
+      <label>Your name<input id="name" type="text" maxlength="16" autocomplete="off"></label>
+      <button id="start" class="big active">Start</button>
+      <p id="setupErr" class="err"></p>
+      <p class="muted">Wear the phone on your chest, screen facing you, back camera facing forward.</p>
+      <p id="arNote" class="muted"></p>
+    </div>
+
+    <div id="run" style="display:none">
+      <div class="stats">
+        <div><span><span id="conn" class="dot"></span>Tracking</span><b id="mode">–</b></div>
+        <div><span>Steps</span><b id="steps">0</b></div>
+        <div><span>Heading</span><b id="heading">–</b></div>
+      </div>
+      <div class="mapwrap">
+        <canvas id="map"></canvas>
+        <div id="banner" class="banner"></div>
+      </div>
+      <div class="actions">
+        <button id="placeBtn">Set my position</button>
+        <button id="cameraBtn" style="display:none">Restart camera</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="js/phone.js"></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HackTheSkies Spectator</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+
+    <aside id="maps-panel" class="panel">
+      <header>
+        <h1>Maps</h1>
+        <label class="btn small" title="Load a .ply / .spz exported from another app">
+          Open file<input id="file-input" type="file" accept=".ply,.spz,.splat,.ksplat,.sog" hidden />
+        </label>
+      </header>
+      <ul id="map-list"></ul>
+      <div id="adjust" hidden>
+        <h2>Adjust map</h2>
+        <div class="row">
+          <button data-adjust="flip" title="Map is upside down">Flip</button>
+          <button data-adjust="rotate" title="Rotate 90° around the vertical axis">Rotate 90°</button>
+          <button data-adjust="floor-up" title="Raise floor 5 cm">Floor ▲</button>
+          <button data-adjust="floor-down" title="Lower floor 5 cm">Floor ▼</button>
+          <button data-adjust="reset" title="Re-run automatic floor detection">Auto</button>
+        </div>
+      </div>
+    </aside>
+
+    <aside id="connect-panel" class="panel">
+      <header>
+        <h1>Scan a map</h1>
+        <button id="connect-toggle" class="btn small">Hide</button>
+      </header>
+      <div id="connect-body">
+        <div id="qr"></div>
+        <ol>
+          <li>Scan this code with the iPhone Camera to connect the HackTheSkies app.</li>
+          <li>Tap <b>Scan Map</b> and walk around slowly.</li>
+          <li>Tap <b>Done</b>. The map appears here and sharpens as it trains.</li>
+        </ol>
+        <code id="server-url"></code>
+      </div>
+    </aside>
+
+    <div id="status-overlay" hidden></div>
+
+    <footer id="hud" class="panel">
+      <span id="hud-mode"></span>
+      <span id="hud-pos"></span>
+      <span id="hud-fps"></span>
+      <span class="keys">Click to look · WASD move · Q/E down/up · Shift fast · <b>F</b> walk/fly · <b>M</b> overview</span>
+    </footer>
+
+    <div id="drop-hint" hidden>Drop a .ply / .spz to add it as a map</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

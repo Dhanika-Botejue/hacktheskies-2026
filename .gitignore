@@ -221,3 +221,12 @@ __marimo__/
 
 # Game server runtime data (map, uploaded floor plan, certs)
 data/
+
+# hacktheskies
+node_modules/
+tools/bin/
+viewer/maps/
+.DS_Store
+app-ios/*.xcodeproj/xcuserdata/
+app-ios/build/
+tools/share/

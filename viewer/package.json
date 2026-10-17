@@ -1,0 +1,22 @@
+{
+  "name": "hts-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sparkjsdev/spark": "2.3.1",
+    "qrcode": "1.5.4",
+    "three": "0.186.1",
+    "tsx": "4.23.15",
+    "vite": "8.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/qrcode": "1.5.6",
+    "@types/three": "0.186.0",
+    "typescript": "5.9.3"
+  }
+}

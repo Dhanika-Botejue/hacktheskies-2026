@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>HackTheSkies – Host</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0f172a;color:#e2e8f0;font-family:'Segoe UI',sans-serif;
+         min-height:100vh;display:flex;flex-direction:column}
+
+    header{background:#1e293b;border-bottom:1px solid #334155;
+           padding:14px 24px;display:flex;align-items:center;gap:16px}
+    header h1{font-size:1.4rem;font-weight:800}
+    header .subtitle{opacity:.5;font-size:.85rem}
+    #timer-display{margin-left:auto;font-size:1.3rem;font-weight:700;
+                   font-variant-numeric:tabular-nums}
+
+    main{flex:1;display:grid;
+         grid-template-columns:1fr 320px;
+         grid-template-rows:auto 1fr;
+         gap:16px;padding:16px;min-height:0}
+
+    /* ── Scoreboard ─────────────────────────────────────────────── */
+    #scoreboard{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap}
+    .score-card{flex:1;min-width:180px;padding:18px 22px;border-radius:14px;
+                border:1px solid #334155;background:#1e293b}
+    .score-card h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;opacity:.5}
+    .score-val{font-size:3rem;font-weight:900;line-height:1;margin-top:4px}
+    .red-card  .score-val{color:#f87171}
+    .blue-card .score-val{color:#60a5fa}
+    .score-card.winner{border-color:#facc15;box-shadow:0 0 16px #facc1540}
+
+    /* ── Map ────────────────────────────────────────────────────── */
+    #map-panel{background:#1e293b;border:1px solid #334155;border-radius:14px;
+               padding:14px;display:flex;flex-direction:column;gap:10px}
+    #map-panel h3{font-size:.85rem;text-transform:uppercase;opacity:.5;letter-spacing:.06em}
+    #map-canvas{flex:1;width:100%;background:#0f172a;border-radius:8px;
+                cursor:crosshair;border:1px solid #334155}
+
+    /* ── Player list ────────────────────────────────────────────── */
+    #players-panel{background:#1e293b;border:1px solid #334155;border-radius:14px;
+                   padding:14px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+    #players-panel h3{font-size:.85rem;text-transform:uppercase;opacity:.5;letter-spacing:.06em}
+    .player-row{display:flex;align-items:center;gap:10px;padding:8px 10px;
+                border-radius:8px;background:#0f172a;font-size:.9rem}
+    .player-row .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+    .player-row.dead{opacity:.4}
+    .player-row .name{font-weight:600;flex:1}
+    .player-row .status{font-size:.75rem;opacity:.6}
+
+    /* ── Controls ───────────────────────────────────────────────── */
+    #controls{grid-column:1/-1;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start}
+    .btn{padding:11px 22px;border-radius:9px;border:none;
+         font-size:.95rem;font-weight:700;cursor:pointer;transition:opacity .15s}
+    .btn:hover{opacity:.85}
+    .btn-start{background:#16a34a;color:#fff}
+    .btn-stop {background:#dc2626;color:#fff}
+    .btn-flag {background:#334155;color:#e2e8f0}
+
+    #flag-hint{font-size:.8rem;opacity:.45;align-self:center}
+    #ws-badge{padding:5px 12px;border-radius:99px;font-size:.75rem;
+              background:#374151;align-self:center}
+    #ws-badge.ok{background:#065f46;color:#6ee7b7}
+    #ws-badge.err{background:#7f1d1d;color:#fca5a5}
+
+    /* ── Event log ──────────────────────────────────────────────── */
+    #log-panel{grid-column:1/-1;max-height:160px;overflow-y:auto;
+               background:#1e293b;border:1px solid #334155;border-radius:12px;
+               padding:10px 14px;font-size:.78rem;font-family:monospace;
+               display:flex;flex-direction:column;gap:3px}
+    .log-line{opacity:.7}
+    .log-line.shot{color:#f87171}
+    .log-line.capture{color:#60a5fa}
+    .log-line.sys{color:#a3e635}
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🔫 HackTheSkies</h1>
+  <span class="subtitle">Host Dashboard</span>
+  <span id="ws-badge">connecting…</span>
+  <span id="timer-display">00:00</span>
+</header>
+
+<main>
+  <!-- Scoreboard -->
+  <div id="scoreboard">
+    <div class="score-card red-card">
+      <h2>🔴 Red Team</h2>
+      <div class="score-val" id="score-red">0s</div>
+    </div>
+    <div class="score-card blue-card">
+      <h2>🔵 Blue Team</h2>
+      <div class="score-val" id="score-blue">0s</div>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div id="map-panel">
+    <h3>Map — click to place flags</h3>
+    <canvas id="map-canvas"></canvas>
+  </div>
+
+  <!-- Players -->
+  <div id="players-panel">
+    <h3>Players</h3>
+    <div id="player-list"><em style="opacity:.3">None connected</em></div>
+  </div>
+
+  <!-- Controls -->
+  <div id="controls">
+    <button class="btn btn-start" id="btn-start">▶ Start Game</button>
+    <button class="btn btn-stop"  id="btn-stop" disabled>■ Stop Game</button>
+    <button class="btn btn-flag"  id="btn-flag-mode">🚩 Flag mode: OFF</button>
+    <span id="flag-hint">Click map to place flag when flag mode is on</span>
+    <span style="flex:1"></span>
+    <span id="ws-badge" style="display:none"></span>
+  </div>
+
+  <!-- Event log -->
+  <div id="log-panel" id="log"></div>
+</main>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────
+let ws           = null;
+let gameActive   = false;
+let flagMode     = false;
+let nextFlagId   = 200;        // flag tags start at 200 per tag_detector.py
+let players      = {};
+let flags        = {};
+let startTime    = null;
+
+// ─── Elements ─────────────────────────────────────────────────────────────
+const $wsBadge   = document.getElementById('ws-badge');
+const $scoreRed  = document.getElementById('score-red');
+const $scoreBlue = document.getElementById('score-blue');
+const $playerList= document.getElementById('player-list');
+const $log       = document.getElementById('log-panel');
+const $btnStart  = document.getElementById('btn-start');
+const $btnStop   = document.getElementById('btn-stop');
+const $btnFlag   = document.getElementById('btn-flag-mode');
+const $timer     = document.getElementById('timer-display');
+const $canvas    = document.getElementById('map-canvas');
+const mapCtx     = $canvas.getContext('2d');
+
+// ─── WebSocket ────────────────────────────────────────────────────────────
+function connect() {
+  const url = `ws://${location.host}/ws/host`;
+  ws = new WebSocket(url);
+
+  ws.onopen  = () => { $wsBadge.className = 'ok'; $wsBadge.textContent = '● connected'; };
+  ws.onclose = () => {
+    $wsBadge.className = 'err'; $wsBadge.textContent = '✕ disconnected';
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => { $wsBadge.className = 'err'; };
+
+  ws.onmessage = e => {
+    let d; try { d = JSON.parse(e.data); } catch { return; }
+    handleMessage(d);
+  };
+}
+connect();
+
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+// ─── Message handler ──────────────────────────────────────────────────────
+function handleMessage(d) {
+  if (d.type === 'state_update') {
+    players = d.players || {};
+    flags   = d.flags   || {};
+    gameActive = d.game_active;
+    updateScores(d.scores);
+    renderPlayers();
+    renderMap();
+    if (gameActive && d.elapsed) {
+      const s = Math.floor(d.elapsed);
+      $timer.textContent = `${pad(Math.floor(s/60))}:${pad(s%60)}`;
+    }
+  }
+  else if (d.type === 'shot_event') {
+    addLog(`Player ${d.shooter_id} shot Player ${d.target_id}`, 'shot');
+  }
+  else if (d.type === 'flag_captured') {
+    addLog(`Flag ${d.flag_id} captured by ${d.team} team`, 'capture');
+  }
+  else if (d.type === 'player_joined') {
+    addLog(`Player ${d.player.player_id} (${d.player.team}) joined`, 'sys');
+  }
+  else if (d.type === 'player_left') {
+    addLog(`Player ${d.player_id} left`, 'sys');
+  }
+  else if (d.type === 'game_started') {
+    gameActive = true; startTime = Date.now();
+    $btnStart.disabled = true; $btnStop.disabled = false;
+    addLog('Game started!', 'sys');
+  }
+  else if (d.type === 'game_over') {
+    gameActive = false;
+    $btnStart.disabled = false; $btnStop.disabled = true;
+    updateScores(d.scores);
+    addLog(`Game over! Winner: ${d.scores.winner} | Red: ${d.scores.red}s  Blue: ${d.scores.blue}s`, 'sys');
+  }
+}
+
+// ─── Controls ─────────────────────────────────────────────────────────────
+$btnStart.addEventListener('click', () => send({ type: 'start_game' }));
+$btnStop .addEventListener('click', () => send({ type: 'stop_game'  }));
+
+$btnFlag.addEventListener('click', () => {
+  flagMode = !flagMode;
+  $btnFlag.textContent = `🚩 Flag mode: ${flagMode ? 'ON' : 'OFF'}`;
+  $btnFlag.style.background = flagMode ? '#b45309' : '';
+});
+
+// ─── Map ──────────────────────────────────────────────────────────────────
+function resizeCanvas() {
+  $canvas.width  = $canvas.clientWidth;
+  $canvas.height = $canvas.clientHeight;
+  renderMap();
+}
+new ResizeObserver(resizeCanvas).observe($canvas);
+
+$canvas.addEventListener('click', e => {
+  if (!flagMode) return;
+  const r   = $canvas.getBoundingClientRect();
+  const nx  = (e.clientX - r.left)  / $canvas.width;
+  const ny  = (e.clientY - r.top)   / $canvas.height;
+  const fid = nextFlagId++;
+  send({ type: 'add_flag', flag_id: fid, x: nx, y: ny });
+  flags[fid] = { flag_id: fid, x: nx, y: ny, owner_team: null };
+  addLog(`Flag ${fid} placed at (${nx.toFixed(2)}, ${ny.toFixed(2)})`, 'sys');
+  renderMap();
+});
+
+function renderMap() {
+  const w = $canvas.width, h = $canvas.height;
+  mapCtx.clearRect(0, 0, w, h);
+
+  // Background grid
+  mapCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+  mapCtx.lineWidth   = 1;
+  const step = 40;
+  for (let x = 0; x < w; x += step) { mapCtx.beginPath(); mapCtx.moveTo(x,0); mapCtx.lineTo(x,h); mapCtx.stroke(); }
+  for (let y = 0; y < h; y += step) { mapCtx.beginPath(); mapCtx.moveTo(0,y); mapCtx.lineTo(w,y); mapCtx.stroke(); }
+
+  // Flags
+  for (const f of Object.values(flags)) {
+    const fx = f.x * w, fy = f.y * h;
+    const col = f.owner_team === 'red' ? '#f87171' : f.owner_team === 'blue' ? '#60a5fa' : '#94a3b8';
+    mapCtx.beginPath();
+    mapCtx.arc(fx, fy, 12, 0, Math.PI * 2);
+    mapCtx.fillStyle = col + '33';
+    mapCtx.fill();
+    mapCtx.strokeStyle = col;
+    mapCtx.lineWidth   = 2.5;
+    mapCtx.stroke();
+    mapCtx.fillStyle   = col;
+    mapCtx.font        = '11px sans-serif';
+    mapCtx.textAlign   = 'center';
+    mapCtx.fillText(`F${f.flag_id - 200}`, fx, fy + 4);
+  }
+
+  // Players
+  for (const p of Object.values(players)) {
+    // Players don't have GPS positions yet — show as list, not map dots
+    // (position tracking is a separate module)
+  }
+}
+
+// ─── Player list ──────────────────────────────────────────────────────────
+function renderPlayers() {
+  if (!Object.keys(players).length) {
+    $playerList.innerHTML = '<em style="opacity:.3">None connected</em>';
+    return;
+  }
+  $playerList.innerHTML = Object.values(players).map(p => `
+    <div class="player-row ${p.alive ? '' : 'dead'}">
+      <div class="dot" style="background:${p.team === 'red' ? '#f87171' : '#60a5fa'}"></div>
+      <span class="name">P${p.player_id}</span>
+      <span class="status">${p.alive ? '✓ alive' : `💀 ${p.seconds_to_respawn}s`}</span>
+    </div>
+  `).join('');
+}
+
+// ─── Scores ───────────────────────────────────────────────────────────────
+function updateScores(s) {
+  if (!s) return;
+  $scoreRed.textContent  = s.red  + 's';
+  $scoreBlue.textContent = s.blue + 's';
+  document.querySelector('.red-card') .classList.toggle('winner', s.winner === 'red');
+  document.querySelector('.blue-card').classList.toggle('winner', s.winner === 'blue');
+}
+
+// ─── Event log ────────────────────────────────────────────────────────────
+function addLog(msg, cls='') {
+  const el = document.createElement('div');
+  el.className   = 'log-line ' + cls;
+  el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  $log.appendChild(el);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+// ─── Timer ────────────────────────────────────────────────────────────────
+setInterval(() => {
+  if (gameActive && startTime) {
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    $timer.textContent = `${pad(Math.floor(s/60))}:${pad(s%60)}`;
+  }
+}, 500);
+
+function pad(n) { return String(n).padStart(2,'0'); }
+</script>
+</body>
+</html>

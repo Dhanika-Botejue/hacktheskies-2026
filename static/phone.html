@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+  <title>HackTheSkies – Phone</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0a0a0a;color:#eee;font-family:'Segoe UI',sans-serif;
+         height:100dvh;display:flex;flex-direction:column;align-items:center;overflow:hidden}
+
+    /* ── Setup ──────────────────────────────────────────────────── */
+    #setup{display:flex;flex-direction:column;gap:14px;padding:28px;
+           width:100%;max-width:400px;margin:auto}
+    #setup h1{text-align:center;font-size:1.8rem}
+    #setup p{text-align:center;opacity:.5;font-size:.85rem}
+    label{font-size:.8rem;opacity:.6;margin-bottom:-8px}
+    input,select{width:100%;padding:11px 13px;border-radius:9px;
+                 border:1px solid #333;background:#141414;color:#eee;font-size:1rem}
+    button#go{margin-top:6px;padding:15px;border-radius:11px;border:none;
+              background:#2563eb;color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer}
+
+    /* ── Game ───────────────────────────────────────────────────── */
+    #game{display:none;width:100%;height:100dvh;position:relative}
+
+    video{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+    canvas#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+
+    /* HUD */
+    #hud{position:absolute;top:0;left:0;right:0;
+         display:flex;justify-content:space-between;align-items:center;
+         padding:10px 14px;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);z-index:10}
+    #pid-label{font-weight:700}
+    #ws-dot{width:10px;height:10px;border-radius:50%;background:#888;display:inline-block;margin-right:6px}
+    #ws-dot.ok{background:#22c55e} #ws-dot.err{background:#ef4444}
+
+    /* Reticle */
+    #reticle{position:absolute;inset:0;display:flex;align-items:center;
+             justify-content:center;pointer-events:none;z-index:5}
+    #reticle svg{width:90px;height:90px;color:#fff;opacity:.45;
+                 transition:opacity .15s,color .15s,filter .15s}
+    #reticle svg.armed {opacity:.85;color:#facc15;filter:drop-shadow(0 0 8px #facc15)}
+    #reticle svg.locked{opacity:1; color:#ef4444;filter:drop-shadow(0 0 14px #ef4444)}
+
+    /* Flash */
+    #flash{position:absolute;inset:0;background:rgba(239,68,68,.6);
+           opacity:0;pointer-events:none;transition:opacity .07s;z-index:15}
+
+    /* Bottom bar */
+    #bar{position:absolute;bottom:0;left:0;right:0;
+         padding:10px 16px 20px;background:rgba(0,0,0,.7);z-index:10}
+    #tgt{text-align:center;font-size:.9rem;font-weight:600;padding:6px 12px;
+         border-radius:8px;background:#1e293b;margin-bottom:8px}
+    #tgt.locked{background:#7f1d1d;color:#fca5a5}
+    .pose-row{display:flex;align-items:center;gap:10px}
+    .pose-lbl{font-size:.75rem;opacity:.55;white-space:nowrap;min-width:72px}
+    .pose-bg{flex:1;height:8px;background:#1e293b;border-radius:4px;overflow:hidden}
+    #pose-fill{height:100%;width:0%;background:#22c55e;border-radius:4px;transition:width .1s,background .1s}
+    #shot-log{font-size:.7rem;opacity:.45;text-align:center;margin-top:6px;height:14px}
+
+    /* Respawn overlay */
+    #respawn{display:none;position:absolute;inset:0;
+             background:rgba(0,0,0,.85);flex-direction:column;
+             align-items:center;justify-content:center;gap:14px;
+             text-align:center;z-index:20}
+    #respawn.show{display:flex}
+    #respawn h2{color:#ef4444;font-size:2rem}
+    #respawn p{opacity:.6}
+    #rtimer{font-size:3.5rem;font-weight:800}
+
+    /* Idle overlay */
+    #idle{display:none;position:absolute;inset:0;background:rgba(0,0,0,.7);
+          align-items:center;justify-content:center;font-size:1.3rem;
+          font-weight:600;opacity:.7;z-index:20;text-align:center}
+    #idle.show{display:flex}
+  </style>
+</head>
+<body>
+
+<!-- ── Setup screen ───────────────────────────────────────────── -->
+<div id="setup">
+  <h1>🔫 HackTheSkies</h1>
+  <p>Strap your phone to your chest, rear camera facing out.</p>
+
+  <label>Your bib number (player ID)</label>
+  <input id="pid" type="number" min="1" max="99" placeholder="e.g. 7"/>
+
+  <label>Team</label>
+  <select id="team">
+    <option value="red">🔴 Red</option>
+    <option value="blue">🔵 Blue</option>
+  </select>
+
+  <label>Server address</label>
+  <input id="srv" type="text" placeholder="192.168.x.x:8765"/>
+
+  <button id="go">Join Game</button>
+</div>
+
+<!-- ── Game screen ────────────────────────────────────────────── -->
+<div id="game">
+  <video id="vid" autoplay playsinline muted></video>
+  <canvas id="ov"></canvas>
+
+  <div id="hud">
+    <span id="pid-label">P—</span>
+    <span><span id="ws-dot"></span><span id="ws-lbl">connecting</span></span>
+    <span id="score-hud">—</span>
+  </div>
+
+  <!-- SVG reticle (crosshair) -->
+  <div id="reticle">
+    <svg id="rtcl" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="3.5">
+      <path d="M50 6  A44 44 0 0 1 94 50" stroke-linecap="round"/>
+      <path d="M94 50 A44 44 0 0 1 50 94" stroke-linecap="round"/>
+      <path d="M50 94 A44 44 0 0 1 6  50" stroke-linecap="round"/>
+      <path d="M6  50 A44 44 0 0 1 50 6"  stroke-linecap="round"/>
+      <line x1="50" y1="18" x2="50" y2="34"/>
+      <line x1="50" y1="66" x2="50" y2="82"/>
+      <line x1="18" y1="50" x2="34" y2="50"/>
+      <line x1="66" y1="50" x2="82" y2="50"/>
+      <circle cx="50" cy="50" r="4" fill="currentColor" stroke="none"/>
+    </svg>
+  </div>
+
+  <div id="flash"></div>
+
+  <div id="respawn">
+    <h2>💀 You were hit!</h2>
+    <p>Run back to your base and scan it to respawn</p>
+    <div id="rtimer">—</div>
+  </div>
+
+  <div id="idle">
+    <span>⏳ Waiting for host<br>to start the game…</span>
+  </div>
+
+  <div id="bar">
+    <div id="tgt">No target in frame</div>
+    <div class="pose-row">
+      <span class="pose-lbl">Finger gun</span>
+      <div class="pose-bg"><div id="pose-fill"></div></div>
+    </div>
+    <div id="shot-log"></div>
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────
+let ws        = null;
+let sending   = false;
+let playerId  = null;
+let team      = null;
+let alive     = true;
+let respawnAt = null;
+let gameActive = false;
+
+// ─── Elements ─────────────────────────────────────────────────────────────
+const $setup    = document.getElementById('setup');
+const $game     = document.getElementById('game');
+const $vid      = document.getElementById('vid');
+const $ov       = document.getElementById('ov');
+const ctx       = $ov.getContext('2d');
+const $rtcl     = document.getElementById('rtcl');
+const $flash    = document.getElementById('flash');
+const $respawn  = document.getElementById('respawn');
+const $rtimer   = document.getElementById('rtimer');
+const $idle     = document.getElementById('idle');
+const $tgt      = document.getElementById('tgt');
+const $poseFill = document.getElementById('pose-fill');
+const $shotLog  = document.getElementById('shot-log');
+const $wsDot    = document.getElementById('ws-dot');
+const $wsLbl    = document.getElementById('ws-lbl');
+const $score    = document.getElementById('score-hud');
+const $pidLbl   = document.getElementById('pid-label');
+
+// ─── Setup button ──────────────────────────────────────────────────────────
+document.getElementById('go').addEventListener('click', async () => {
+  playerId = parseInt(document.getElementById('pid').value);
+  team     = document.getElementById('team').value;
+  const srv = document.getElementById('srv').value.trim();
+  if (!playerId || !srv) { alert('Fill in all fields'); return; }
+
+  // Open rear camera
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+  } catch (e) { alert('Camera access denied: ' + e.message); return; }
+
+  $vid.srcObject = stream;
+  await new Promise(r => $vid.onloadedmetadata = r);
+
+  // Show game screen
+  $setup.style.display = 'none';
+  $game.style.display  = 'block';
+  $pidLbl.textContent  = `P${playerId} · ${team === 'red' ? '🔴' : '🔵'}`;
+
+  // Connect WebSocket
+  const wsUrl = `ws://${srv}/ws/phone`;
+  connectWS(wsUrl);
+});
+
+// ─── WebSocket ────────────────────────────────────────────────────────────
+function connectWS(url) {
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setWS('ok', 'connected');
+    ws.send(JSON.stringify({ type: 'register', player_id: playerId, team }));
+    startSendLoop();
+  };
+
+  ws.onclose = () => {
+    setWS('err', 'disconnected');
+    sending = false;
+    setTimeout(() => connectWS(url), 2000);   // auto-reconnect
+  };
+
+  ws.onerror = () => setWS('err', 'error');
+
+  ws.onmessage = e => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    handleMessage(data);
+  };
+}
+
+function setWS(state, label) {
+  $wsDot.className = state;
+  $wsLbl.textContent = label;
+}
+
+// ─── Frame send loop ──────────────────────────────────────────────────────
+// 10 fps → one frame every 100 ms.
+// We use a canvas to grab a JPEG snapshot of the video and send it as binary.
+const $snap = document.createElement('canvas');
+const snapCtx = $snap.getContext('2d');
+
+async function startSendLoop() {
+  sending = true;
+  while (sending && ws && ws.readyState === WebSocket.OPEN) {
+    if ($vid.readyState >= 2) {
+      const vw = $vid.videoWidth, vh = $vid.videoHeight;
+      if (vw > 0 && vh > 0) {
+        $snap.width  = vw;
+        $snap.height = vh;
+        snapCtx.drawImage($vid, 0, 0, vw, vh);
+        // Also size the overlay canvas to match the video element dimensions
+        $ov.width  = $ov.clientWidth;
+        $ov.height = $ov.clientHeight;
+
+        const blob = await new Promise(r => $snap.toBlob(r, 'image/jpeg', 0.7));
+        if (blob && ws.readyState === WebSocket.OPEN) {
+          const ab = await blob.arrayBuffer();
+          ws.send(ab);
+        }
+      }
+    }
+    await sleep(100);
+  }
+}
+
+// ─── Message handler ──────────────────────────────────────────────────────
+function handleMessage(d) {
+  if (d.type === 'frame_result') {
+    gameActive = true;
+    $idle.classList.remove('show');
+
+    alive     = d.alive;
+    respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;  // convert to ms
+
+    updatePoseBar(d.pose, d.armed);
+    updateTarget(d.target_id);
+    updateReticle(d.armed, d.target_id !== null);
+    updateScores(d.scores);
+
+    if (d.shot_fired) triggerShotFlash();
+
+    if (!alive) {
+      $respawn.classList.add('show');
+    } else {
+      $respawn.classList.remove('show');
+    }
+
+    drawOverlay(d.landmarks, d.tag_corners);
+  }
+
+  else if (d.type === 'shot_event') {
+    // We were hit
+    alive = false;
+    respawnAt = d.respawn_at * 1000;
+    $respawn.classList.add('show');
+    triggerShotFlash();
+  }
+
+  else if (d.type === 'respawned') {
+    alive = true;
+    respawnAt = null;
+    $respawn.classList.remove('show');
+  }
+
+  else if (d.type === 'idle') {
+    $idle.classList.add('show');
+    updateScores(d.scores);
+  }
+
+  else if (d.type === 'game_over') {
+    $idle.classList.add('show');
+    $idle.querySelector('span').textContent =
+      `Game over!\n🔴 ${d.scores.red}s  🔵 ${d.scores.blue}s\nWinner: ${d.scores.winner}`;
+  }
+}
+
+// ─── UI helpers ───────────────────────────────────────────────────────────
+function updatePoseBar(pose, armed) {
+  $poseFill.style.width     = (pose * 100).toFixed(1) + '%';
+  $poseFill.style.background = armed ? '#ef4444' : '#22c55e';
+}
+
+function updateTarget(targetId) {
+  if (targetId !== null) {
+    $tgt.textContent = `🎯 Target: Player ${targetId}`;
+    $tgt.className   = 'locked';
+  } else {
+    $tgt.textContent = 'No target in frame';
+    $tgt.className   = '';
+  }
+}
+
+function updateReticle(armed, locked) {
+  $rtcl.className = locked && armed ? 'locked' : (armed ? 'armed' : '');
+}
+
+function updateScores(s) {
+  if (!s) return;
+  $score.textContent = `🔴${s.red}s  🔵${s.blue}s`;
+}
+
+function triggerShotFlash() {
+  $flash.style.opacity = '1';
+  setTimeout(() => { $flash.style.opacity = '0'; }, 200);
+  $shotLog.textContent = 'SHOT FIRED  ' + new Date().toLocaleTimeString();
+}
+
+// ─── Canvas overlay (landmarks + tag box) ────────────────────────────────
+function drawOverlay(landmarks, tagCorners) {
+  ctx.clearRect(0, 0, $ov.width, $ov.height);
+  const w = $ov.width, h = $ov.height;
+
+  // Hand skeleton
+  if (landmarks) {
+    ctx.strokeStyle = 'rgba(34,197,94,0.8)';
+    ctx.fillStyle   = 'rgba(34,197,94,0.9)';
+    ctx.lineWidth   = 2;
+    for (const [x, y] of landmarks) {
+      ctx.beginPath();
+      ctx.arc(x * w, y * h, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Connect index finger chain (5-6-7-8)
+    const idxChain = [5, 6, 7, 8];
+    ctx.beginPath();
+    for (let i = 0; i < idxChain.length - 1; i++) {
+      const [x1,y1] = landmarks[idxChain[i]];
+      const [x2,y2] = landmarks[idxChain[i+1]];
+      ctx.moveTo(x1*w, y1*h);
+      ctx.lineTo(x2*w, y2*h);
+    }
+    ctx.stroke();
+  }
+
+  // AprilTag bounding box
+  if (tagCorners) {
+    ctx.strokeStyle = 'rgba(239,68,68,0.9)';
+    ctx.lineWidth   = 3;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = tagCorners[i];
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+}
+
+// ─── Respawn timer display ────────────────────────────────────────────────
+function tickRespawn() {
+  if (respawnAt) {
+    const secs = Math.max(0, Math.ceil((respawnAt - Date.now()) / 1000));
+    $rtimer.textContent = secs > 0 ? secs : '→ scan base!';
+  }
+}
+setInterval(tickRespawn, 500);
+
+// ─── Util ─────────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+</body>
+</html>

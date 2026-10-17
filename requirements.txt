@@ -1,0 +1,19 @@
+# HackTheSkies – Python dependencies
+# Install with: pip install -r requirements.txt
+#
+# Python 3.10+ recommended.
+
+# Web server + WebSocket
+aiohttp==3.9.*
+
+# Computer vision
+opencv-python-headless==4.9.*   # headless = no GUI deps (server has no display)
+
+# Hand pose detection
+mediapipe==0.10.*
+
+# AprilTag detection (C library wrapper)
+pupil-apriltags==1.0.*
+
+# NumPy (used throughout; pinned loosely to avoid conflicts with mediapipe)
+numpy>=1.23,<2.0

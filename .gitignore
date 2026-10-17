@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# hacktheskies
+node_modules/
+tools/bin/
+viewer/maps/
+.DS_Store
+app-ios/*.xcodeproj/xcuserdata/
+app-ios/build/
+tools/share/

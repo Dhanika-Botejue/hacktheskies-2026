@@ -80,6 +80,7 @@
 <header>
   <h1>🔫 HackTheSkies</h1>
   <span class="subtitle">Host Dashboard</span>
+  <a href="/tags" target="_blank" style="color:#93c5fd;font-size:14px">🏷 Tags</a>
   <span id="ws-badge">connecting…</span>
   <span id="timer-display">00:00</span>
 </header>
@@ -148,7 +149,7 @@ const mapCtx     = $canvas.getContext('2d');
 
 // ─── WebSocket ────────────────────────────────────────────────────────────
 function connect() {
-  const url = `ws://${location.host}/ws/host`;
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/host`;
   ws = new WebSocket(url);
 
   ws.onopen  = () => { $wsBadge.className = 'ok'; $wsBadge.textContent = '● connected'; };
@@ -182,7 +183,8 @@ function handleMessage(d) {
     }
   }
   else if (d.type === 'shot_event') {
-    addLog(`Player ${d.shooter_id} shot Player ${d.target_id}`, 'shot');
+    addLog(d.killed ? `Player ${d.shooter_id} killed Player ${d.target_id}`
+                    : `Player ${d.shooter_id} hit Player ${d.target_id} (${d.hp}/${d.max_hp} HP)`, 'shot');
   }
   else if (d.type === 'flag_captured') {
     addLog(`Flag ${d.flag_id} captured by ${d.team} team`, 'capture');
@@ -202,7 +204,7 @@ function handleMessage(d) {
     gameActive = false;
     $btnStart.disabled = false; $btnStop.disabled = true;
     updateScores(d.scores);
-    addLog(`Game over! Winner: ${d.scores.winner} | Red: ${d.scores.red}s  Blue: ${d.scores.blue}s`, 'sys');
+    addLog(`Game over! Winner: ${d.scores.winner} | Red: ${d.scores.red_kills} kills  Blue: ${d.scores.blue_kills} kills`, 'sys');
   }
 }
 
@@ -281,7 +283,7 @@ function renderPlayers() {
     <div class="player-row ${p.alive ? '' : 'dead'}">
       <div class="dot" style="background:${p.team === 'red' ? '#f87171' : '#60a5fa'}"></div>
       <span class="name">P${p.player_id}</span>
-      <span class="status">${p.alive ? '✓ alive' : `💀 ${p.seconds_to_respawn}s`}</span>
+      <span class="status">${p.kills}K / ${p.deaths}D · ${p.alive ? '❤️'.repeat(p.hp) + '🖤'.repeat(p.max_hp - p.hp) : `💀 ${p.seconds_to_respawn}s`}</span>
     </div>
   `).join('');
 }
@@ -289,8 +291,8 @@ function renderPlayers() {
 // ─── Scores ───────────────────────────────────────────────────────────────
 function updateScores(s) {
   if (!s) return;
-  $scoreRed.textContent  = s.red  + 's';
-  $scoreBlue.textContent = s.blue + 's';
+  $scoreRed.textContent  = `${s.red_kills} kills`;
+  $scoreBlue.textContent = `${s.blue_kills} kills`;
   document.querySelector('.red-card') .classList.toggle('winner', s.winner === 'red');
   document.querySelector('.blue-card').classList.toggle('winner', s.winner === 'blue');
 }

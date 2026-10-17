@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Self-signed HTTPS cert (server.py generates it)
+certs/

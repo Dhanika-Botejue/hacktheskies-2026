@@ -22,71 +22,77 @@
 
     /* ── Game ───────────────────────────────────────────────────── */
     #game{display:none;width:100%;height:100dvh;position:relative}
-
     video{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
     canvas#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 
     /* HUD */
     #hud{position:absolute;top:0;left:0;right:0;
          display:flex;justify-content:space-between;align-items:center;
-         padding:10px 14px;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);z-index:10}
-    #pid-label{font-weight:700}
-    #ws-dot{width:10px;height:10px;border-radius:50%;background:#888;display:inline-block;margin-right:6px}
+         padding:10px 14px;background:rgba(0,0,0,.6);backdrop-filter:blur(6px);z-index:10}
+    #pid-label{font-weight:700;font-size:1rem}
+    #ws-dot{width:10px;height:10px;border-radius:50%;background:#888;display:inline-block;margin-right:5px}
     #ws-dot.ok{background:#22c55e} #ws-dot.err{background:#ef4444}
+    #score-hud{font-size:.85rem}
 
     /* Reticle */
     #reticle{position:absolute;inset:0;display:flex;align-items:center;
              justify-content:center;pointer-events:none;z-index:5}
-    #reticle svg{width:90px;height:90px;color:#fff;opacity:.45;
-                 transition:opacity .15s,color .15s,filter .15s}
-    #reticle svg.armed     { opacity:.85; color:#facc15; filter:drop-shadow(0 0 8px #facc15) }
-    #reticle svg.locked    { opacity:1;   color:#ef4444; filter:drop-shadow(0 0 14px #ef4444) }
-    #reticle svg.capturing { opacity:1;   color:#3b82f6; filter:drop-shadow(0 0 14px #3b82f6) }
-    #reticle svg.base      { opacity:1;   color:#22c55e; filter:drop-shadow(0 0 14px #22c55e) }
+    #rtcl{width:90px;height:90px;color:#fff;opacity:.4;
+          transition:opacity .12s,color .12s,filter .12s}
+    #rtcl.armed  {opacity:.9;color:#facc15;filter:drop-shadow(0 0 8px #facc15)}
+    #rtcl.locked {opacity:1; color:#ef4444;filter:drop-shadow(0 0 16px #ef4444)}
 
-    /* Flash */
-    #flash{position:absolute;inset:0;background:rgba(239,68,68,.6);
-           opacity:0;pointer-events:none;transition:opacity .07s;z-index:15}
+    /* Screen flash on hit/shoot */
+    #flash{position:absolute;inset:0;opacity:0;pointer-events:none;z-index:15;
+           transition:opacity .07s}
 
     /* Bottom bar */
     #bar{position:absolute;bottom:0;left:0;right:0;
-         padding:10px 16px 20px;background:rgba(0,0,0,.7);z-index:10}
-    #tgt{text-align:center;font-size:.9rem;font-weight:600;padding:6px 12px;
+         padding:10px 16px 20px;background:rgba(0,0,0,.72);z-index:10}
+    #tgt{text-align:center;font-size:.95rem;font-weight:700;padding:7px 12px;
          border-radius:8px;background:#1e293b;margin-bottom:8px}
-    #tgt.locked    {background:#7f1d1d;color:#fca5a5}
-    #tgt.capturing {background:#1e3a5f;color:#93c5fd}
-    #tgt.base      {background:#14532d;color:#86efac}
+    #tgt.warn{background:#713f12;color:#fde68a}
+    #tgt.hit{background:#14532d;color:#86efac}
+
+    /* Big HIT banner */
+    #hit{position:absolute;top:38%;left:0;right:0;text-align:center;z-index:16;
+         font-size:3rem;font-weight:900;color:#22c55e;text-shadow:0 0 18px #000,0 0 6px #000;
+         opacity:0;transform:scale(.6);transition:opacity .15s,transform .15s;pointer-events:none}
+    #hit.show{opacity:1;transform:scale(1)}
     .pose-row{display:flex;align-items:center;gap:10px}
-    .pose-lbl{font-size:.75rem;opacity:.55;white-space:nowrap;min-width:72px}
+    .pose-lbl{font-size:.75rem;opacity:.5;white-space:nowrap;min-width:72px}
     .pose-bg{flex:1;height:8px;background:#1e293b;border-radius:4px;overflow:hidden}
     #pose-fill{height:100%;width:0%;background:#22c55e;border-radius:4px;transition:width .1s,background .1s}
-    #shot-log{font-size:.7rem;opacity:.45;text-align:center;margin-top:6px;height:14px}
+    #checks{font-size:.72rem;text-align:center;margin-top:6px;opacity:.75;letter-spacing:.02em}
+    #checks .y{color:#22c55e} #checks .n{color:#ef4444}
+    #shot-log{font-size:.7rem;opacity:.4;text-align:center;margin-top:6px;height:14px}
 
-    /* Respawn overlay */
-    #respawn{display:none;position:absolute;inset:0;
-             background:rgba(0,0,0,.85);flex-direction:column;
-             align-items:center;justify-content:center;gap:14px;
-             text-align:center;z-index:20}
-    #respawn.show{display:flex}
-    #respawn h2{color:#ef4444;font-size:2rem}
-    #respawn p{opacity:.6}
-    #rtimer{font-size:3.5rem;font-weight:800}
+    /* Dead overlay */
+    #dead{display:none;position:absolute;inset:0;
+          background:rgba(0,0,0,.88);flex-direction:column;
+          align-items:center;justify-content:center;gap:14px;
+          text-align:center;z-index:20}
+    #dead.show{display:flex}
+    #dead h2{color:#ef4444;font-size:2.2rem}
+    #dead p{opacity:.6;font-size:1rem}
+    #rtimer{font-size:4rem;font-weight:900;font-variant-numeric:tabular-nums}
 
     /* Idle overlay */
-    #idle{display:none;position:absolute;inset:0;background:rgba(0,0,0,.7);
+    #idle{display:none;position:absolute;inset:0;background:rgba(0,0,0,.75);
           align-items:center;justify-content:center;font-size:1.3rem;
-          font-weight:600;opacity:.7;z-index:20;text-align:center}
+          font-weight:600;opacity:.8;z-index:20;text-align:center;padding:24px}
     #idle.show{display:flex}
   </style>
 </head>
 <body>
 
-<!-- ── Setup screen ───────────────────────────────────────────── -->
+<!-- ── Setup screen ───────────────────────────────────────── -->
 <div id="setup">
   <h1>🔫 HackTheSkies</h1>
-  <p>Strap your phone to your chest, rear camera facing out.</p>
+  <p>Strap your phone to your chest, rear camera facing out.<br>
+     Aim with a thumbs-up + index finger pointed at the target's tag.</p>
 
-  <label>Your bib number (player ID)</label>
+  <label>Your bib number (player ID 1–99)</label>
   <input id="pid" type="number" min="1" max="99" placeholder="e.g. 7"/>
 
   <label>Team</label>
@@ -95,13 +101,13 @@
     <option value="blue">🔵 Blue</option>
   </select>
 
-  <label>Server address</label>
+  <label>Server address (host's LAN IP:port)</label>
   <input id="srv" type="text" placeholder="192.168.x.x:8765"/>
 
   <button id="go">Join Game</button>
 </div>
 
-<!-- ── Game screen ────────────────────────────────────────────── -->
+<!-- ── Game screen ────────────────────────────────────────── -->
 <div id="game">
   <video id="vid" autoplay playsinline muted></video>
   <canvas id="ov"></canvas>
@@ -112,7 +118,7 @@
     <span id="score-hud">—</span>
   </div>
 
-  <!-- SVG reticle (crosshair) -->
+  <!-- SVG crosshair reticle -->
   <div id="reticle">
     <svg id="rtcl" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="3.5">
       <path d="M50 6  A44 44 0 0 1 94 50" stroke-linecap="round"/>
@@ -128,16 +134,17 @@
   </div>
 
   <div id="flash"></div>
+  <div id="hit"></div>
 
-  <div id="respawn">
-    <h2>💀 You were hit!</h2>
-    <p>Aim your finger gun at your team's<br><strong>base tag</strong> to respawn</p>
+  <!-- Dead screen -->
+  <div id="dead">
+    <h2>💀 You were killed!</h2>
+    <p>Respawning in…</p>
     <div id="rtimer">—</div>
   </div>
 
-  <div id="idle">
-    <span>⏳ Waiting for host<br>to start the game…</span>
-  </div>
+  <!-- Idle (waiting for host to start) -->
+  <div id="idle"><span>⏳ Waiting for host<br>to start the game…</span></div>
 
   <div id="bar">
     <div id="tgt">No target in frame</div>
@@ -145,6 +152,7 @@
       <span class="pose-lbl">Finger gun</span>
       <div class="pose-bg"><div id="pose-fill"></div></div>
     </div>
+    <div id="checks">no hand</div>
     <div id="shot-log"></div>
   </div>
 </div>
@@ -157,7 +165,6 @@ let playerId  = null;
 let team      = null;
 let alive     = true;
 let respawnAt = null;
-let gameActive = false;
 
 // ─── Elements ─────────────────────────────────────────────────────────────
 const $setup    = document.getElementById('setup');
@@ -167,25 +174,39 @@ const $ov       = document.getElementById('ov');
 const ctx       = $ov.getContext('2d');
 const $rtcl     = document.getElementById('rtcl');
 const $flash    = document.getElementById('flash');
-const $respawn  = document.getElementById('respawn');
+const $dead     = document.getElementById('dead');
 const $rtimer   = document.getElementById('rtimer');
 const $idle     = document.getElementById('idle');
 const $tgt      = document.getElementById('tgt');
 const $poseFill = document.getElementById('pose-fill');
 const $shotLog  = document.getElementById('shot-log');
+const $checks   = document.getElementById('checks');
+const $hit      = document.getElementById('hit');
 const $wsDot    = document.getElementById('ws-dot');
 const $wsLbl    = document.getElementById('ws-lbl');
 const $score    = document.getElementById('score-hud');
 const $pidLbl   = document.getElementById('pid-label');
 
-// ─── Setup button ──────────────────────────────────────────────────────────
-document.getElementById('go').addEventListener('click', async () => {
-  playerId = parseInt(document.getElementById('pid').value);
-  team     = document.getElementById('team').value;
-  const srv = document.getElementById('srv').value.trim();
-  if (!playerId || !srv) { alert('Fill in all fields'); return; }
+// ─── Setup ────────────────────────────────────────────────────────────────
+// Pre-fill: server = whoever served this page; pid/team from ?pid=&team= or last session.
+// With ?pid=1&team=red in the URL the page joins straight away (handy on refresh).
+const $pidIn = document.getElementById('pid'), $teamIn = document.getElementById('team'),
+      $srvIn = document.getElementById('srv');
+const params = new URLSearchParams(location.search);
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem('hts-setup') || '{}'); } catch {}
+$srvIn.value  = params.get('srv')  || location.host || saved.srv || '';
+$pidIn.value  = params.get('pid')  || saved.pid  || '';
+$teamIn.value = params.get('team') || saved.team || 'red';
 
-  // Open rear camera
+document.getElementById('go').addEventListener('click', async () => {
+  playerId = parseInt($pidIn.value);
+  team     = $teamIn.value;
+  const srv = $srvIn.value.trim();
+  if (!playerId || !srv) { alert('Fill in all fields'); return; }
+  unlockAudio();
+  try { localStorage.setItem('hts-setup', JSON.stringify({ pid: playerId, team, srv })); } catch {}
+
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -197,15 +218,14 @@ document.getElementById('go').addEventListener('click', async () => {
   $vid.srcObject = stream;
   await new Promise(r => $vid.onloadedmetadata = r);
 
-  // Show game screen
   $setup.style.display = 'none';
   $game.style.display  = 'block';
-  $pidLbl.textContent  = `P${playerId} · ${team === 'red' ? '🔴' : '🔵'}`;
+  renderHp(3, 3);
 
-  // Connect WebSocket
-  const wsUrl = `ws://${srv}/ws/phone`;
-  connectWS(wsUrl);
+  connectWS(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${srv}/ws/phone`);
 });
+
+if (params.get('pid') && params.get('team')) document.getElementById('go').click();
 
 // ─── WebSocket ────────────────────────────────────────────────────────────
 function connectWS(url) {
@@ -217,254 +237,302 @@ function connectWS(url) {
     ws.send(JSON.stringify({ type: 'register', player_id: playerId, team }));
     startSendLoop();
   };
-
   ws.onclose = () => {
     setWS('err', 'disconnected');
     sending = false;
-    setTimeout(() => connectWS(url), 2000);   // auto-reconnect
+    setTimeout(() => connectWS(url), 2000);
   };
-
   ws.onerror = () => setWS('err', 'error');
-
   ws.onmessage = e => {
-    let data;
-    try { data = JSON.parse(e.data); } catch { return; }
-    handleMessage(data);
+    let d; try { d = JSON.parse(e.data); } catch { return; }
+    if (d.type === 'frame_result' || d.type === 'idle' || d.error) frameReplied();
+    handleMessage(d);
   };
 }
 
 function setWS(state, label) {
-  $wsDot.className = state;
+  $wsDot.className   = state;
   $wsLbl.textContent = label;
 }
 
-// ─── Frame send loop ──────────────────────────────────────────────────────
-// 10 fps → one frame every 100 ms.
-// We use a canvas to grab a JPEG snapshot of the video and send it as binary.
-const $snap = document.createElement('canvas');
+// ─── Frame send loop (up to 10 fps) ───────────────────────────────────────
+// One frame in flight at a time: wait for the server's reply before sending the
+// next, so a busy server never builds a backlog (which would add growing lag).
+const $snap   = document.createElement('canvas');
 const snapCtx = $snap.getContext('2d');
+const FRAME_INTERVAL_MS = 100;
+const REPLY_TIMEOUT_MS  = 1000;
+let replyWaiter = null;
+function frameReplied() { if (replyWaiter) { replyWaiter(); replyWaiter = null; } }
 
 async function startSendLoop() {
   sending = true;
   while (sending && ws && ws.readyState === WebSocket.OPEN) {
+    const started = performance.now();
+    let sent = false;
     if ($vid.readyState >= 2) {
       const vw = $vid.videoWidth, vh = $vid.videoHeight;
       if (vw > 0 && vh > 0) {
         $snap.width  = vw;
         $snap.height = vh;
         snapCtx.drawImage($vid, 0, 0, vw, vh);
-        // Also size the overlay canvas to match the video element dimensions
         $ov.width  = $ov.clientWidth;
         $ov.height = $ov.clientHeight;
-
         const blob = await new Promise(r => $snap.toBlob(r, 'image/jpeg', 0.7));
         if (blob && ws.readyState === WebSocket.OPEN) {
-          const ab = await blob.arrayBuffer();
-          ws.send(ab);
+          const replied = new Promise(r => { replyWaiter = r; });
+          ws.send(await blob.arrayBuffer());
+          sent = true;
+          await Promise.race([replied, sleep(REPLY_TIMEOUT_MS)]);
         }
       }
     }
-    await sleep(100);
+    await sleep(Math.max(sent ? 0 : FRAME_INTERVAL_MS, FRAME_INTERVAL_MS - (performance.now() - started)));
   }
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────
 function handleMessage(d) {
   if (d.type === 'frame_result') {
-    gameActive = true;
     $idle.classList.remove('show');
 
     alive     = d.alive;
     respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;
+    if (d.hp !== undefined) renderHp(d.hp, d.max_hp);
 
-    updatePoseBar(d.pose, d.armed);
-    updateTarget(d.aiming_role, d.aiming_tag_id);
-    updateReticle(d.aiming_role, d.armed, d.capture_progress);
-    updateScores(d.scores);
+    // Pose bar
+    $poseFill.style.width      = (d.pose * 100).toFixed(1) + '%';
+    $poseFill.style.background = d.armed ? '#facc15' : '#22c55e';
 
-    if (d.shot_fired)    triggerShotFlash();
-    if (d.capture_event) triggerCaptureFlash(d.capture_event);
-    if (d.respawned)     { alive = true; respawnAt = null; }
+    // Per-finger pose checks
+    const c = d.criteria || {};
+    $checks.innerHTML = Object.keys(c).length
+      ? [['index_extended','index out'], ['thumb_extended','thumb up'],
+         ['middle_curled','middle'], ['ring_curled','ring'], ['pinky_curled','pinky']]
+          .map(([k, lbl]) => `<span class="${c[k] ? 'y' : 'n'}">${c[k] ? '✓' : '✗'} ${lbl}</span>`)
+          .join(' · ')
+      : 'no hand';
 
-    if (!alive) {
-      $respawn.classList.add('show');
-    } else {
-      $respawn.classList.remove('show');
+    // Reticle: red only when a shot would actually fire this frame
+    const hasTarget = d.aiming_tag_id !== null;
+    $rtcl.className = (d.fire_ready && hasTarget) ? 'locked' : d.armed ? 'armed' : '';
+
+    // Status line: says exactly why this frame did / didn't fire
+    const [msg, cls] = statusText(d);
+    $tgt.textContent = msg;
+    $tgt.className   = cls;
+
+    // Scores: kills-based
+    if (d.scores) {
+      $score.textContent =
+        `🔴 ${d.scores.red_kills}K  🔵 ${d.scores.blue_kills}K  · you: ${d.kills ?? 0}`;
     }
 
-    drawOverlay(d.landmarks, d.tag_corners, d.aiming_role, d.capture_progress);
+    if (d.shot_fired) showHit(d.aiming_tag_id, d.shot_killed, d.target_hp);
+
+    // Dead overlay
+    if (!alive) $dead.classList.add('show');
+    else        $dead.classList.remove('show');
+
+    drawOverlay(d.landmarks, d.tags_seen, d.aiming_tag_id, d.frame_w, d.frame_h);
   }
 
   else if (d.type === 'shot_event') {
-    // We were hit
-    alive = false;
-    respawnAt = d.respawn_at * 1000;
-    $respawn.classList.add('show');
-    triggerShotFlash();
+    // We were hit: lose a heart; dead only at 0 HP
+    renderHp(d.hp, d.max_hp);
+    if (navigator.vibrate) navigator.vibrate(d.killed ? [300, 100, 300] : [150]);
+    d.killed ? sfx.downed() : sfx.hurt();
+    if (d.killed) {
+      alive     = false;
+      respawnAt = d.respawn_at * 1000;
+      $dead.classList.add('show');
+      triggerFlash('#ef4444', 'YOU WERE KILLED!');
+    } else {
+      triggerFlash('#f97316', `HIT! ${d.hp}/${d.max_hp} HP left`);
+    }
   }
 
   else if (d.type === 'idle') {
     $idle.classList.add('show');
-    updateScores(d.scores);
   }
 
   else if (d.type === 'game_over') {
+    $idle.querySelector('span').innerHTML =
+      `Game over!<br>🔴 ${d.scores.red_kills}K  🔵 ${d.scores.blue_kills}K<br>Winner: ${d.scores.winner}`;
     $idle.classList.add('show');
-    $idle.querySelector('span').textContent =
-      `Game over!\n🔴 ${d.scores.red}s  🔵 ${d.scores.blue}s\nWinner: ${d.scores.winner}`;
   }
 }
 
-// ─── UI helpers ───────────────────────────────────────────────────────────
-function updatePoseBar(pose, armed) {
-  $poseFill.style.width      = (pose * 100).toFixed(1) + '%';
-  $poseFill.style.background = armed ? '#facc15' : '#22c55e';
-}
-
-function updateTarget(role, tagId) {
-  if (!role || tagId === null) {
-    $tgt.textContent = 'Nothing in frame';
-    $tgt.className   = '';
-    return;
+// ─── Status line ──────────────────────────────────────────────────────────
+function statusText(d) {
+  const ids = (d.tags_seen || []).map(t => t.id).join(', ');
+  const tgt = d.aiming_tag_id;
+  switch (d.status) {
+    case 'hit':                return [`💥 HIT Player ${tgt}!`, 'hit'];
+    case 'dead':               return ['💀 You are down', ''];
+    case 'no_hand':            return [ids ? `No hand seen · tags in view: ${ids}` : 'No hand seen · no tags in view', ''];
+    case 'no_tag_visible':     return ['✋ Hand OK · no tag detected in view', ''];
+    case 'not_aimed':          return [`👀 Tag ${ids} in view · point your finger at it`, 'warn'];
+    case 'pose_not_ready':     return [`🎯 Aiming at P${tgt} · fix the ✗ fingers to fire (pinky optional)`, 'warn'];
+    case 'cooldown':           return [`🎯 P${tgt} · reloading ${d.cooldown_left}s`, 'warn'];
+    case 'target_dead':        return [`🎯 P${tgt} is already down`, 'warn'];
+    case 'same_team':          return [`🎯 P${tgt} is on your team`, 'warn'];
+    case 'target_not_in_game': return [`🎯 P${tgt} hasn't joined the game`, 'warn'];
+    default:                   return [d.status || '—', ''];
   }
-  const labels = {
-    player: `🎯 AIM: Player ${tagId}  — shoot!`,
-    flag:   `🚩 AIM: Flag ${tagId - 200}  — hold to capture!`,
-    base:   `🏠 AIM: Base tag  — ${alive ? 'already alive' : 'hold to respawn!'}`,
-  };
-  $tgt.textContent = labels[role] || `Tag ${tagId}`;
-  $tgt.className   = (role === 'player' && !alive) ? '' :
-                     (role === 'player') ? 'locked' :
-                     (role === 'flag')   ? 'capturing' :
-                     (role === 'base')   ? 'base' : '';
 }
 
-// Reticle colour key:
-//   nothing / not armed → grey dim
-//   armed, no tag       → yellow
-//   armed + player tag  → red  "locked on player"
-//   armed + flag tag    → blue "capturing"
-//   armed + base tag    → green "respawning"
-function updateReticle(role, armed, captureProgress) {
-  let cls = '';
-  if (armed) {
-    if      (role === 'player') cls = 'locked';
-    else if (role === 'flag')   cls = 'capturing';
-    else if (role === 'base')   cls = 'base';
-    else                        cls = 'armed';
-  }
-  $rtcl.className = cls;
-
-  // Capture arc — draw on the capture-arc canvas
-  drawCaptureArc(captureProgress || 0, role === 'flag' && armed);
+// ─── Hit feedback ─────────────────────────────────────────────────────────
+let hitTimer = null;
+function showHit(targetId, killed, targetHp) {
+  $hit.textContent = killed ? `💀 KILLED P${targetId}!` : `💥 HIT P${targetId} · ${targetHp} HP left`;
+  $hit.classList.add('show');
+  clearTimeout(hitTimer);
+  hitTimer = setTimeout(() => $hit.classList.remove('show'), 1500);
+  if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+  killed ? sfx.kill() : sfx.hit();
+  triggerFlash('#22c55e', killed ? `KILLED P${targetId}` : `HIT P${targetId}`);
 }
 
-function updateScores(s) {
-  if (!s) return;
-  $score.textContent = `🔴${s.red}s  🔵${s.blue}s`;
+// ─── Sounds ───────────────────────────────────────────────────────────────
+// Synthesised with Web Audio (no files).  Browsers only allow audio after a
+// tap, so unlockAudio() runs on the Join button and on the first touch.
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch {}
+}
+document.addEventListener('pointerdown', unlockAudio, { once: true });
+
+// One note: frequency glides from f0 to f1, starting `at` seconds from now
+function tone(f0, f1, at, dur, type = 'sine', vol = 0.35) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime + at;
+  const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(f0, t);
+  osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + dur + 0.05);
 }
 
-function triggerShotFlash() {
-  $flash.style.background = 'rgba(239,68,68,0.6)';
+const sfx = {
+  // You landed a hit: bright single ding
+  hit()    { tone(1568, 1568, 0, 0.35); tone(3136, 3136, 0, 0.2, 'sine', 0.1); },
+  // You killed someone: rising three-note bing
+  kill()   { tone(1047, 1047, 0, 0.15); tone(1319, 1319, 0.1, 0.15); tone(2093, 2093, 0.2, 0.5); },
+  // You got hit: sad falling two-note bing
+  hurt()   { tone(659, 622, 0, 0.25, 'triangle', 0.4); tone(523, 466, 0.22, 0.45, 'triangle', 0.4); },
+  // You died: descending "wah-wah" + a spoken "Downed"
+  downed() {
+    tone(392, 370, 0,    0.3, 'sawtooth', 0.2);
+    tone(370, 349, 0.3,  0.3, 'sawtooth', 0.2);
+    tone(349, 330, 0.6,  0.3, 'sawtooth', 0.2);
+    tone(330, 165, 0.9,  0.9, 'sawtooth', 0.2);
+    try {
+      const u = new SpeechSynthesisUtterance('Downed');
+      u.rate = 0.8; u.pitch = 0.6;
+      setTimeout(() => speechSynthesis.speak(u), 400);
+    } catch {}
+  },
+};
+
+// ─── Hit points ───────────────────────────────────────────────────────────
+function renderHp(hp, max) {
+  $pidLbl.textContent = `P${playerId} · ${team === 'red' ? '🔴' : '🔵'} · ` +
+    '❤️'.repeat(Math.max(0, hp)) + '🖤'.repeat(Math.max(0, max - hp));
+}
+
+// ─── Flash ────────────────────────────────────────────────────────────────
+function triggerFlash(colour, msg) {
+  $flash.style.background = colour + '99';
   $flash.style.opacity    = '1';
-  setTimeout(() => { $flash.style.opacity = '0'; }, 220);
-  $shotLog.textContent = 'SHOT FIRED  ' + new Date().toLocaleTimeString();
+  setTimeout(() => { $flash.style.opacity = '0'; }, 250);
+  $shotLog.textContent = msg + '  ' + new Date().toLocaleTimeString();
 }
 
-function triggerCaptureFlash(ev) {
-  $flash.style.background = 'rgba(59,130,246,0.5)';
-  $flash.style.opacity    = '1';
-  setTimeout(() => { $flash.style.opacity = '0'; }, 400);
-  $shotLog.textContent = `FLAG ${ev.flag_id} CAPTURED by ${ev.team}!  ${new Date().toLocaleTimeString()}`;
-}
-
-// ─── Capture arc overlay ──────────────────────────────────────────────────
-// Drawn on the same overlay canvas, centred on screen
-function drawCaptureArc(progress, visible) {
-  // drawn as part of drawOverlay — stored globally for compositing
-  window._captureProgress = visible ? progress : 0;
-}
-
-// ─── Canvas overlay (landmarks + tag box + capture arc) ──────────────────
-function drawOverlay(landmarks, tagCorners, role, captureProgress) {
+// ─── Canvas overlay ───────────────────────────────────────────────────────
+// Draws hand skeleton dots + aim ray + tag bounding box.
+// The <video> uses object-fit:cover, so map frame coords through the same
+// scale + centre-crop the browser applies, or the overlay drifts off the video.
+function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH) {
+  const aimed = (tagsSeen || []).find(t => t.id === aimedId);
+  const tagCorners = aimed ? aimed.corners : null;
   ctx.clearRect(0, 0, $ov.width, $ov.height);
   const w = $ov.width, h = $ov.height;
+  const fw = frameW || $vid.videoWidth || w, fh = frameH || $vid.videoHeight || h;
+  const s  = Math.max(w / fw, h / fh);
+  const ox = (w - fw * s) / 2, oy = (h - fh * s) / 2;
+  const px = ([x, y]) => [ox + x * s, oy + y * s];           // camera pixels -> canvas
+  const nx = ([x, y]) => px([x * fw, y * fh]);               // normalised    -> canvas
 
-  // Hand skeleton
+  // Hand skeleton (landmarks are normalised 0-1)
   if (landmarks) {
-    ctx.strokeStyle = 'rgba(34,197,94,0.8)';
     ctx.fillStyle   = 'rgba(34,197,94,0.9)';
+    ctx.strokeStyle = 'rgba(34,197,94,0.8)';
     ctx.lineWidth   = 2;
-    for (const [x, y] of landmarks) {
+    for (const lm of landmarks) {
+      const [x, y] = nx(lm);
       ctx.beginPath();
-      ctx.arc(x * w, y * h, 4, 0, Math.PI * 2);
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Index finger chain 5→6→7→8
-    const chain = [5, 6, 7, 8];
+    // Index finger chain 5-6-7-8
     ctx.beginPath();
-    for (let i = 0; i < chain.length - 1; i++) {
-      const [x1, y1] = landmarks[chain[i]];
-      const [x2, y2] = landmarks[chain[i + 1]];
-      ctx.moveTo(x1 * w, y1 * h);
-      ctx.lineTo(x2 * w, y2 * h);
+    for (let i = 0; i < 3; i++) {
+      ctx.moveTo(...nx(landmarks[5 + i]));
+      ctx.lineTo(...nx(landmarks[6 + i]));
     }
     ctx.stroke();
+
+    // Aim ray: knuckle (5) -> fingertip (8), extended past the tip
+    const [kx, ky] = nx(landmarks[5]), [tx, ty] = nx(landmarks[8]);
+    const len = Math.hypot(tx - kx, ty - ky) || 1;
+    ctx.strokeStyle = tagCorners ? 'rgba(239,68,68,0.9)' : 'rgba(250,204,21,0.7)';
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(tx + (tx - kx) / len * 3000, ty + (ty - ky) / len * 3000);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
-  // Tag bounding box — colour by role
-  if (tagCorners) {
-    const colours = {
-      player: 'rgba(239,68,68,0.9)',     // red
-      flag:   'rgba(59,130,246,0.9)',     // blue
-      base:   'rgba(34,197,94,0.9)',      // green
-    };
-    ctx.strokeStyle = colours[role] || 'rgba(148,163,184,0.7)';
-    ctx.lineWidth   = 3;
+  // Every detected tag: white box + ID; the aimed-at one in red (camera-pixel coords).
+  // Dashed = not seen this frame, held at its last position for a moment.
+  for (const t of tagsSeen || []) {
+    const isAimed = t.id === aimedId;
+    ctx.strokeStyle = isAimed ? 'rgba(239,68,68,0.95)' : 'rgba(255,255,255,0.85)';
+    ctx.lineWidth   = isAimed ? 4 : 2;
+    ctx.setLineDash(t.stale ? [6, 5] : []);
     ctx.beginPath();
-    for (let i = 0; i < 4; i++) {
-      const [x, y] = tagCorners[i];
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
+    t.corners.forEach((c, i) => i === 0 ? ctx.moveTo(...px(c)) : ctx.lineTo(...px(c)));
     ctx.closePath();
     ctx.stroke();
-  }
-
-  // Capture progress arc (centred, shown when aiming at flag)
-  const cp = captureProgress || 0;
-  if (cp > 0 && role === 'flag') {
-    const cx = w / 2, cy = h / 2, r = 52;
-    // Background ring
-    ctx.strokeStyle = 'rgba(59,130,246,0.25)';
-    ctx.lineWidth   = 8;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-    // Progress arc
-    ctx.strokeStyle = 'rgba(59,130,246,0.95)';
-    ctx.lineWidth   = 8;
-    ctx.lineCap     = 'round';
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + cp * Math.PI * 2);
-    ctx.stroke();
-    ctx.lineCap = 'butt';
+    ctx.setLineDash([]);
+    const [lx, ly] = px(t.corners.reduce((a, c) => (c[1] < a[1] ? c : a)));
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.font      = 'bold 16px sans-serif';
+    ctx.fillText(`P${t.id}`, lx, ly - 6);
   }
 }
 
-// ─── Respawn timer display ────────────────────────────────────────────────
+// ─── Dead timer ───────────────────────────────────────────────────────────
 function tickRespawn() {
   if (!alive && respawnAt) {
     const secs = Math.max(0, Math.ceil((respawnAt - Date.now()) / 1000));
-    $rtimer.textContent = secs > 0 ? `${secs}s` : 'Ready!';
+    $rtimer.textContent = secs > 0 ? `${secs}s` : 'Respawning…';
   } else if (!alive) {
-    $rtimer.textContent = 'Ready!';
+    $rtimer.textContent = 'Respawning…';
   }
 }
 setInterval(tickRespawn, 500);
 
-// ─── Util ─────────────────────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 </script>
 </body>
 </html>
-

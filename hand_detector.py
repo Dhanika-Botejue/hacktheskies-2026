@@ -16,16 +16,21 @@ Download once with:
     )
     "
 
-Finger-gun definition
+Finger-gun definition  ("thumbs up with the index finger pointing out")
 ---------------------
-  OK  Index finger fully extended (tip above PIP joint in image coords)
-  OK  Thumb extended (tip further from wrist than IP joint)
+  OK  Index finger extended
+  OK  Thumb raised away from the fist
   NO  Middle finger curled
   NO  Ring finger curled
   NO  Pinky curled
 
+All checks use MediaPipe's 3D world landmarks (metres, hand-centred), so they
+work regardless of which way the hand is pointing — sideways, at the camera,
+or up.  The index finger's direction is what aims; see tag_detector.pick_aimed_tag.
+
 Returns a confidence score 0.0-1.0 (fraction of criteria met).
-A score >= 0.75 means the hand is "armed"; >= 0.85 means "fire".
+A score >= 0.75 means the hand is "armed"; "ready" (allowed to fire) means
+every check in REQUIRED_TO_FIRE passes.
 
 Thread-safety
 -------------
@@ -48,8 +53,10 @@ from typing import Optional
 WRIST      = 0
 THUMB_IP   = 3
 THUMB_TIP  = 4
+INDEX_MCP  = 5
 INDEX_PIP  = 6
 INDEX_TIP  = 8
+MIDDLE_MCP = 9
 MIDDLE_PIP = 10
 MIDDLE_TIP = 12
 RING_PIP   = 14
@@ -57,18 +64,29 @@ RING_TIP   = 16
 PINKY_PIP  = 18
 PINKY_TIP  = 20
 
+# Tuning — "reach" = |wrist->tip| / |wrist->PIP| (see _reach).  Tuned on real
+# webcam frames: MediaPipe reads loosely tucked fingers at ~1.05-1.25 reach, so
+# curl is judged *relative to the index* rather than against a fixed cut-off.
+INDEX_MIN_REACH = 1.0  # index must reach at least this far
+CURL_GAP        = 0.15 # middle/ring must reach at least this much less than the index
+THUMB_OUT_RATIO = 0.7  # thumb raised if |thumb tip->index knuckle| > this * palm length
+
+# Checks that must all pass to fire.  The pinky is shown but not required: it
+# reads noisily when tucked and was the lone failing check in most near-misses.
+REQUIRED_TO_FIRE = ('index_extended', 'thumb_extended', 'middle_curled', 'ring_curled')
+
 DEFAULT_MODEL = pathlib.Path(__file__).parent / 'hand_landmarker.task'
 
 
 class HandDetector:
     """
-    Wraps MediaPipe HandLandmarker (Tasks API) for single-hand finger-gun
-    detection.
+    Wraps MediaPipe HandLandmarker (Tasks API) for finger-gun detection.
 
     Parameters
     ----------
     model_path : path to hand_landmarker.task
-    num_hands  : max hands to detect (1 is enough, faster)
+    num_hands  : max hands to detect.  2 by default so a second hand in view
+                 (e.g. one holding a phone) can't hide the shooting hand.
     min_hand_detection_confidence
     min_hand_presence_confidence
     min_tracking_confidence
@@ -77,7 +95,7 @@ class HandDetector:
     def __init__(
         self,
         model_path: str | pathlib.Path = DEFAULT_MODEL,
-        num_hands: int = 1,
+        num_hands: int = 2,
         min_hand_detection_confidence: float = 0.6,
         min_hand_presence_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
@@ -102,16 +120,30 @@ class HandDetector:
         lm = landmarks[idx]
         return np.array([lm.x, lm.y, lm.z], dtype=np.float32)
 
-    def _tip_extended(self, lms, tip_idx: int, pip_idx: int) -> bool:
-        """True when fingertip is above (smaller y) the PIP joint."""
-        return lms[tip_idx].y < lms[pip_idx].y
+    def _dist(self, lms, a: int, b: int) -> float:
+        return float(np.linalg.norm(self._lm(lms, a) - self._lm(lms, b)))
+
+    def _reach(self, lms, tip_idx: int, pip_idx: int) -> float:
+        """How far the fingertip reaches past its PIP joint, measured from the wrist.
+        ~1.35 when straight, ~1.05 bent 90 deg at the PIP, < 0.9 folded into a fist."""
+        return self._dist(lms, WRIST, tip_idx) / max(self._dist(lms, WRIST, pip_idx), 1e-6)
 
     def _thumb_extended(self, lms) -> bool:
-        """True when thumb tip is further from wrist than IP joint."""
-        wrist = self._lm(lms, WRIST)
-        tip   = self._lm(lms, THUMB_TIP)
-        ip    = self._lm(lms, THUMB_IP)
-        return float(np.linalg.norm(tip - wrist)) > float(np.linalg.norm(ip - wrist))
+        """True when the thumb tip is held away from the index knuckle (thumbs-up),
+        rather than tucked across the curled fingers."""
+        palm = max(self._dist(lms, WRIST, MIDDLE_MCP), 1e-6)
+        return self._dist(lms, THUMB_TIP, INDEX_MCP) / palm > THUMB_OUT_RATIO
+
+    def _criteria(self, world) -> dict:
+        index = self._reach(world, INDEX_TIP, INDEX_PIP)
+        return {
+            'index_extended': index >= INDEX_MIN_REACH,
+            'thumb_extended': self._thumb_extended(world),
+            'middle_curled':  self._reach(world, MIDDLE_TIP, MIDDLE_PIP) <= index - CURL_GAP,
+            'ring_curled':    self._reach(world, RING_TIP,   RING_PIP)   <= index - CURL_GAP,
+            # The pinky reads noisily when tucked, so it only has to be no further out than the index
+            'pinky_curled':   self._reach(world, PINKY_TIP,  PINKY_PIP)  <= index,
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -127,45 +159,45 @@ class HandDetector:
 
         Returns
         -------
-        dict
+        dict — fields for the best (highest-confidence) hand, plus all hands:
             confidence : float       0.0-1.0 (fraction of criteria met)
             detected   : bool        any hand found?
             armed      : bool        confidence >= 0.75
+            ready      : bool        every REQUIRED_TO_FIRE check passes
             landmarks  : list|None   [(x, y), ...] normalised, or None
             criteria   : dict        per-criterion booleans (for debug)
+            hands      : list        {confidence, armed, landmarks, criteria} per hand
         """
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         result   = self._landmarker.detect(mp_image)
 
-        if not result.hand_landmarks:
+        hands = []
+        # image landmarks (normalised, for drawing / aiming) + world landmarks
+        # (3D metres, for orientation-free pose checks)
+        for lms, world in zip(result.hand_landmarks, result.hand_world_landmarks):
+            criteria   = self._criteria(world)
+            confidence = sum(criteria.values()) / len(criteria)
+            hands.append({
+                'confidence': round(confidence, 3),
+                'armed':      confidence >= 0.75,
+                'ready':      all(criteria[k] for k in REQUIRED_TO_FIRE),
+                'landmarks':  [(lm.x, lm.y) for lm in lms],
+                'criteria':   criteria,
+            })
+
+        if not hands:
             return {
                 'confidence': 0.0,
                 'detected':   False,
                 'armed':      False,
+                'ready':      False,
                 'landmarks':  None,
                 'criteria':   {},
+                'hands':      [],
             }
 
-        lms = result.hand_landmarks[0]  # first detected hand
-
-        criteria = {
-            'index_extended': self._tip_extended(lms, INDEX_TIP,  INDEX_PIP),
-            'thumb_extended': self._thumb_extended(lms),
-            'middle_curled':  not self._tip_extended(lms, MIDDLE_TIP, MIDDLE_PIP),
-            'ring_curled':    not self._tip_extended(lms, RING_TIP,   RING_PIP),
-            'pinky_curled':   not self._tip_extended(lms, PINKY_TIP,  PINKY_PIP),
-        }
-
-        confidence = sum(criteria.values()) / len(criteria)
-        landmarks  = [(lm.x, lm.y) for lm in lms]
-
-        return {
-            'confidence': round(confidence, 3),
-            'detected':   True,
-            'armed':      confidence >= 0.75,
-            'landmarks':  landmarks,
-            'criteria':   criteria,
-        }
+        best = max(hands, key=lambda h: (h['ready'], h['confidence']))
+        return {**best, 'detected': True, 'hands': hands}
 
     def close(self):
         self._landmarker.close()

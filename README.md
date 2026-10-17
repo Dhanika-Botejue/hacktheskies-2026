@@ -46,12 +46,24 @@ All devices must be on the same Wi-Fi network.
 
 ```
 pose ≥ 0.75  →  reticle turns yellow ("armed")
-pose ≥ 0.85  AND  AprilTag visible  →  SHOT FIRED
+index out + thumb up + middle & ring tucked   ┐  both within the last
+index finger points at a player AprilTag      ┘  0.4 s  →  SHOT FIRED
 ```
 
-Criteria for "finger gun" (each worth 0.2):
+Detection flickers frame to frame (blur, distance), so the pose and the aim don't
+have to land in the same frame (`TRIGGER_WINDOW_S` in `server.py`), and a tag that
+drops out is remembered at its last position for `TAG_MEMORY_S`. The pinky is shown
+on the phone but not required — it reads noisily when tucked.
+
+Aiming: a 2D ray from the index knuckle through the fingertip is cast across the
+frame; the player tag closest to that ray (relative to its on-screen size) is the
+target. If the finger points straight at the camera, the tag under the fingertip wins.
+Tune `AIM_TOLERANCE` / `AIM_MIN_FINGER_PX` in `tag_detector.py`.
+
+Criteria for "finger gun" — thumbs-up with the index finger out (each worth 0.2).
+Checked on 3D world landmarks, so any hand orientation works:
 - Index finger extended
-- Thumb extended
+- Thumb raised away from the fist
 - Middle finger curled
 - Ring finger curled
 - Pinky curled
@@ -65,7 +77,19 @@ Criteria for "finger gun" (each worth 0.2):
 | 101 | Blue team base |
 | 200+ | Flag markers (index = ID − 200) |
 
-Print tag36h11 family tags. Generator: https://github.com/AprilRobotics/apriltag-imgs
+The game uses the **tag25h9** family (`TAG_FAMILY` in `tag_detector.py`): bigger cells
+than tag36h11 at the same print size, so it reads ~25% farther under motion blur —
+which matters indoors. It has IDs 0–34, so only player bibs fit (no bases/flags).
+
+Generate printable bibs (verified against the detector):
+
+```bash
+python gen_tags.py                     # players 1-10 -> ./tags/
+python gen_tags.py --ids 1 2 3 --size 2400   # print resolution
+```
+
+Print as large as people can wear (A3 / tabloid), keep the white border, mount on
+card so the tag stays flat, and use matte paper to avoid glare from indoor lights.
 
 ## Tuning
 
@@ -73,7 +97,8 @@ Edit the constants at the top of `server.py`:
 
 ```python
 POSE_ARMED_THRESHOLD = 0.75   # show armed reticle
-POSE_FIRE_THRESHOLD  = 0.85   # actually fire
+TRIGGER_WINDOW_S     = 0.4    # pose and aim may be this far apart in time
+TAG_MEMORY_S         = 0.4    # how long a missed tag is still aimable
 ```
 
 Edit `game_state.py` for:

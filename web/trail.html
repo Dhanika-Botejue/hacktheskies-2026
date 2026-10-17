@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <title>Walk Trail Test</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .trail { display: flex; flex-direction: column; height: 100%; }
+    .trail .view { flex: 1; position: relative; min-height: 0; }
+    .trail .signal { height: 90px; border-top: 1px solid var(--line); }
+    .trail .controls { padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+    .trail .controls label { display: grid; grid-template-columns: 90px 1fr 48px; align-items: center; gap: 8px; font-size: 13px; }
+    .trail .controls output { text-align: right; font-variant-numeric: tabular-nums; }
+    .trail input[type=range] { width: 100%; }
+    .overlay-start { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 24px; background: var(--bg); }
+  </style>
+</head>
+<body>
+  <div class="phone trail">
+    <div class="stats">
+      <div><span>Steps</span><b id="steps">0</b></div>
+      <div><span>Distance</span><b id="dist">0.0 m</b></div>
+      <div><span>Heading</span><b id="heading">–</b></div>
+    </div>
+    <div class="view">
+      <canvas id="trail"></canvas>
+      <div id="startPanel" class="overlay-start">
+        <h1 style="margin:0">Walk trail test</h1>
+        <p class="muted" style="margin:0">Hold the phone upright in front of your chest, screen facing you. Tap start, then walk. Your path is drawn from the start point, with "up" being the direction you faced when you started.</p>
+        <button id="start" class="big active">Start</button>
+        <p id="err" class="err"></p>
+      </div>
+    </div>
+    <canvas id="signal" class="signal"></canvas>
+    <div class="controls">
+      <label>Step trigger <input id="high" type="range" min="0.4" max="4" step="0.1"><output id="highVal"></output></label>
+      <label>Stride <input id="k" type="range" min="0.25" max="0.9" step="0.01"><output id="kVal"></output></label>
+      <div class="row"><button id="reset">Reset path</button><button id="follow" class="active">Follow</button></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { StepDetector, headingFromOrientation, requestSensorPermission } from './js/pdr.js';
+    import { TrailView } from './js/trailview.js';
+
+    const $ = (id) => document.getElementById(id);
+    const load = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+    const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+    let heading = null;   // phone heading, arbitrary zero
+    let zero = 0;         // phone heading that counts as "up" on screen
+    let pos = { x: 0, y: 0 };
+    let path = [{ x: 0, y: 0 }];
+    let distance = 0;
+    const trailView = new TrailView($('trail'));
+    const signal = [];    // recent { v, step } samples for the plot
+
+    const detector = new StepDetector(({ heading: h, len }) => {
+      const a = ((h - zero) * Math.PI) / 180;
+      pos = { x: pos.x + Math.sin(a) * len, y: pos.y - Math.cos(a) * len };
+      path.push(pos);
+      distance += len;
+      $('steps').textContent = detector.count;
+      $('dist').textContent = `${distance.toFixed(1)} m`;
+      if (signal.length) signal[signal.length - 1].step = true;
+      if (navigator.vibrate) navigator.vibrate(15);
+    });
+    detector.k = parseFloat(load('htsStrideK', detector.k));
+    detector.high = parseFloat(load('htsStepHigh', detector.high));
+
+    function bindSlider(id, prop, key, fmt) {
+      const input = $(id), out = $(id + 'Val');
+      input.value = detector[prop];
+      out.textContent = fmt(detector[prop]);
+      input.addEventListener('input', () => {
+        detector[prop] = parseFloat(input.value);
+        out.textContent = fmt(detector[prop]);
+        save(key, input.value);
+      });
+    }
+    bindSlider('high', 'high', 'htsStepHigh', (v) => v.toFixed(1));
+    bindSlider('k', 'k', 'htsStrideK', (v) => v.toFixed(2));
+
+    function reset() {
+      zero = heading ?? 0;
+      pos = { x: 0, y: 0 };
+      path = [pos];
+      distance = 0;
+      detector.count = 0;
+      $('steps').textContent = '0';
+      $('dist').textContent = '0.0 m';
+    }
+    $('reset').addEventListener('click', reset);
+    $('follow').addEventListener('click', () => { trailView.follow = !trailView.follow; $('follow').classList.toggle('active', trailView.follow); });
+
+    $('start').addEventListener('click', async () => {
+      if (!window.isSecureContext) { $('err').textContent = 'Open this page over https:// so the motion sensors work.'; return; }
+      try { await requestSensorPermission(); } catch (e) { $('err').textContent = e.message; return; }
+      window.addEventListener('deviceorientation', (e) => {
+        if (e.alpha == null) return;
+        heading = headingFromOrientation(e.alpha, e.beta, e.gamma);
+        detector.addHeading(heading);
+      });
+      window.addEventListener('devicemotion', (e) => {
+        const a = e.accelerationIncludingGravity;
+        if (!a || a.x == null) return;
+        detector.addMotion(a.x, a.y, a.z, e.timeStamp);
+        signal.push({ v: detector.smooth, step: false });
+        if (signal.length > 400) signal.shift();
+      });
+      try { await navigator.wakeLock?.request('screen'); } catch {}
+      setTimeout(() => {
+        if (heading == null) { $('err').textContent = 'No orientation sensor data. Open this on a phone.'; return; }
+        reset();
+        $('startPanel').style.display = 'none';
+      }, 400);
+    });
+
+    // ---------- drawing ----------
+
+    function sizeCanvas(c) {
+      const dpr = devicePixelRatio || 1, r = c.getBoundingClientRect();
+      if (c.width !== Math.round(r.width * dpr)) { c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr); }
+      const ctx = c.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, w: r.width, h: r.height };
+    }
+
+    function drawSignal() {
+      const { ctx, w, h } = sizeCanvas($('signal'));
+      ctx.fillStyle = '#1c1f25';
+      ctx.fillRect(0, 0, w, h);
+      const range = 8; // m/s^2 shown above and below gravity
+      const Y = (v) => h / 2 - (v / range) * (h / 2);
+      ctx.strokeStyle = 'rgba(255,201,20,0.6)';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(0, Y(detector.high)); ctx.lineTo(w, Y(detector.high)); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(w, Y(0)); ctx.stroke();
+      ctx.strokeStyle = '#e8eaed';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      signal.forEach((s, i) => { const x = (i / 400) * w, y = Y(s.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke();
+      ctx.fillStyle = '#76b041';
+      signal.forEach((s, i) => { if (s.step) ctx.fillRect((i / 400) * w - 1, 0, 2, h); });
+      ctx.fillStyle = '#8a919c';
+      ctx.font = '11px system-ui, sans-serif';
+      ctx.fillText('accel (green = step, dashed = trigger)', 8, 13);
+    }
+
+    (function loop() {
+      if (heading != null) $('heading').textContent = `${Math.round(((heading - zero) % 360 + 360) % 360)}°`;
+      trailView.draw(path, pos, heading == null ? null : heading - zero);
+      drawSignal();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>

@@ -118,8 +118,9 @@ export function setStatus(html: string | null, corner = false) {
   if (html) el.innerHTML = html;
 }
 
-export function setHud(mode: string, pos: { x: number; y: number; z: number }, fps: number) {
+export function setHud(mode: string, pos: { x: number; y: number; z: number }, fps: number, game: string) {
   $("#hud-mode").textContent = mode.toUpperCase();
   $("#hud-pos").textContent = `x ${pos.x.toFixed(2)}  y ${pos.y.toFixed(2)}  z ${pos.z.toFixed(2)} m`;
   $("#hud-fps").textContent = `${fps.toFixed(0)} fps`;
+  $("#hud-game").textContent = game;
 }

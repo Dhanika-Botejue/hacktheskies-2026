@@ -27,13 +27,17 @@ const HINTS = {
 const ws = connect({ role: 'host' }, onMessage, (up) => $('conn').classList.toggle('on', up));
 
 function onMessage(msg) {
-  if (msg.t === 'map' && !mapLoaded) {
-    // Only take the server's map once; after that this page is the editor and the source of truth.
+  if (msg.t === 'map' && (!mapLoaded || msg.map.splat?.id !== map.splat?.id || msg.map.image?.url !== map.image?.url)) {
+    // This page edits the walls. Besides the first load, only take the server's map when the 3D
+    // viewer has made a (new) scan the game map, or re-rendered its floor plan.
+    if (mapLoaded && msg.map.splat?.id !== map.splat?.id) history.length = 0;
+    const firstOrNewScan = !mapLoaded || msg.map.splat?.id !== map.splat?.id;
     mapLoaded = true;
     map = msg.map;
-    view.needsFit = true;
+    view.needsFit = firstOrNewScan;
     view.setMap(map);
     updateInfo();
+    updateScanLock();
   } else if (msg.t === 'state') {
     players = msg.players;
     view.players = players;
@@ -65,7 +69,17 @@ function undo() {
   afterChange();
 }
 function updateInfo() {
-  $('mapInfo').textContent = `${map.width.toFixed(1)} × ${map.height.toFixed(1)} m · ${map.walls.length} walls${map.image ? '' : ' · no image'}`;
+  const source = map.splat ? ' · from 3D scan' : map.image ? '' : ' · no image';
+  $('mapInfo').textContent = `${map.width.toFixed(1)} × ${map.height.toFixed(1)} m · ${map.walls.length} walls${source}`;
+}
+
+// A map made from a 3D scan is already in real metres and lined up with the scan, so rescaling it
+// or swapping its floor plan would break the alignment.
+function updateScanLock() {
+  const locked = !!map.splat;
+  for (const id of ['upload', 'clearImage']) $(id).disabled = locked;
+  document.querySelector('[data-tool="scale"]').disabled = locked;
+  if (locked && tool === 'scale') setTool('wall');
 }
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -100,6 +114,7 @@ function nearestWall(p) {
 }
 
 function setTool(t) {
+  if (t === 'scale' && map.splat) return;
   tool = t;
   chainStart = scaleA = placePos = null;
   document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
@@ -285,3 +300,4 @@ view.overlay = (ctx) => {
 
 setTool('wall');
 updateInfo();
+updateScanLock();

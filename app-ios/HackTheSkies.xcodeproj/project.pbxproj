@@ -22,7 +22,7 @@
 		90A2E698F196FD37E6F0646E /* Uploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uploader.swift; sourceTree = "<group>"; };
 		AFA957337381CEC736FB0D6B /* HackTheSkiesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HackTheSkiesApp.swift; sourceTree = "<group>"; };
 		BD0B763A1E79ADC2DF1B9D2C /* DatasetWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatasetWriter.swift; sourceTree = "<group>"; };
-		C8662896F2CA553503B2309F /* HackTheSkies.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HackTheSkies.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C8662896F2CA553503B2309F /* HackTheSkies.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HackTheSkies.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CCFA89874C84C3726BAA5AAC /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -133,6 +133,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = XSK757B7G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HackTheSkies/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -152,6 +153,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = XSK757B7G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HackTheSkies/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

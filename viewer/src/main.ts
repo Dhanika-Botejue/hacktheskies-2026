@@ -1,10 +1,14 @@
-// Spectator viewer: shows the active map as a Gaussian splat and lets you fly/walk through it.
+// Spectator viewer: shows the active map as a Gaussian splat, walked through first-person like a
+// shooter map, with the players' live positions from the game server.
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import type { MapInfo } from "../server/maps.ts";
 import { autoCalibrate, currentUp, nudgeFloor, rotateY90, sampleCenters } from "./calibrate.ts";
 import { SpectatorControls } from "./controls.ts";
-import { MarkerLayer, SAMPLE_MARKERS } from "./markers.ts";
+import { GameLink, isLinked, publishGameMap, yawToHeading } from "./game.ts";
+import { Feed, Minimap, drawCompass, renderPlayersPanel, renderScoreboard } from "./hud.ts";
+import { MarkerLayer } from "./markers.ts";
+import { PlayerLayer } from "./players.ts";
 import {
   type MapsState, renderMapList, setHud, setStatus, setupConnectPanel, setupUploads, subscribeMaps,
 } from "./ui.ts";
@@ -15,11 +19,19 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0d12);
 scene.add(new SparkRenderer({ renderer }));
+// Splats ignore lights; these only shade the player avatars.
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 2.2));
 
 const controls = new SpectatorControls(canvas);
+// Flags and bases will go here once the game server tracks them.
 const markers = new MarkerLayer();
-markers.set(SAMPLE_MARKERS);
 scene.add(markers.group);
+
+const game = new GameLink();
+const players = new PlayerLayer(game, document.querySelector<HTMLElement>("#labels")!);
+scene.add(players.group);
+const minimap = new Minimap(game);
+const feed = new Feed();
 
 // Arrow showing where the spectator is standing, visible in the top-down overview.
 const you = new THREE.Mesh(
@@ -103,13 +115,49 @@ async function loadMap(map: MapInfo) {
   }
   current = { map: { ...latest, transform }, mesh, centers };
   if (switchedMap) controls.resetPose();
+  updateAdjustPanel();
+  syncGameMap();
+}
+
+// ---- Game map -------------------------------------------------------------------------------
+
+// The map on screen is the game map: the game server gets its footprint and floor plan, so
+// player positions from the phones line up with the scan.
+let publishing = false;
+
+function syncGameMap() {
+  if (publishing || !game.connected || !game.map || !current?.map.transform) return;
+  const { map, mesh } = current;
+  const transform = map.transform!;
+  if (map.id !== state.activeId || isLinked(game.map, map, transform)) return;
+  const fresh = game.map.splat?.id !== map.id;
+  publishing = true;
+  publishGameMap(game.map, map, mesh, transform)
+    .then((next) => {
+      if (!next) return;
+      game.map = next;
+      if (fresh) feed.push(`Game map is now "${map.name}"`, "#ffd34d");
+    })
+    .catch((err) => console.error("couldn't update the game map", err))
+    .finally(() => {
+      publishing = false;
+      // The map may have changed again (new training preview, adjustment) while we worked.
+      if (current && current.map.transform && !isLinked(game.map, current.map, current.map.transform)) {
+        setTimeout(syncGameMap, 1000);
+      }
+    });
+}
+
+function updateAdjustPanel() {
+  const active = state.maps.find((m) => m.id === state.activeId);
+  document.querySelector<HTMLElement>("#adjust")!.hidden = !(active?.splatFile && current?.map.id === active.id);
 }
 
 function onState(next: MapsState) {
   state = next;
   renderMapList(state);
   const active = state.maps.find((m) => m.id === state.activeId) ?? null;
-  document.querySelector<HTMLElement>("#adjust")!.hidden = !(active?.splatFile && current?.map.id === active.id);
+  updateAdjustPanel();
 
   if (!active) {
     setStatus("No map yet.<br>Scan one with the phone app (QR code, top right) or drop a .ply/.spz here.");
@@ -164,8 +212,152 @@ document.querySelectorAll<HTMLButtonElement>("[data-adjust]").forEach((btn) => {
     current.map.transform = next;
     applyTransform(current.mesh, next);
     void saveTransform(current.map.id, next);
+    syncGameMap();
   };
 });
+
+// ---- Players: spectating and placing ---------------------------------------------------------
+
+let followId: string | null = null;
+let selectedId: string | null = null;
+// Overview placement: first click = where they stand, second click = the way they face.
+let placing: { id: string; at: THREE.Vector3 | null } | null = null;
+
+const placeMarker = new THREE.Group();
+{
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffd34d, depthTest: false, transparent: true });
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.25, 32).rotateX(-Math.PI / 2), mat);
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+    new THREE.LineBasicMaterial({ color: 0xffd34d, depthTest: false }));
+  line.name = "aim";
+  placeMarker.add(dot, line);
+  placeMarker.renderOrder = 1000;
+  placeMarker.children.forEach((c) => (c.renderOrder = 1000));
+  placeMarker.visible = false;
+  scene.add(placeMarker);
+}
+
+const nameOf = (id: string) => game.players.find((p) => p.id === id)?.name ?? "player";
+
+function spectate(id: string) {
+  if (!players.pose(id)) return;
+  followId = id;
+  placing = null;
+  controls.follow(() => players.pose(id));
+  feed.push(`Watching ${nameOf(id)} · V: over the shoulder · WASD: take over`);
+}
+
+function startPlacing(id: string) {
+  selectedId = players.selectedId = id;
+  placing = { id, at: null };
+  controls.setMode("overview");
+  updatePlacingHint();
+}
+
+function finishPlacing(id: string, x: number, z: number, heading: number) {
+  game.place(id, x, z, heading);
+  feed.push(`Placed ${nameOf(id)}`, "#ffd34d");
+  placing = null;
+  updatePlacingHint();
+}
+
+function updatePlacingHint() {
+  placeMarker.visible = !!placing?.at;
+  if (placing?.at) placeMarker.position.set(placing.at.x, 0.03, placing.at.z);
+  const hint = document.querySelector<HTMLElement>("#place-hint")!;
+  hint.hidden = !placing;
+  if (placing) {
+    hint.textContent = placing.at
+      ? `Now click the direction ${nameOf(placing.id)} is facing. Esc cancels.`
+      : `Click where ${nameOf(placing.id)} is standing. Esc cancels. (Or walk there in first person and press P.)`;
+  }
+}
+
+let downAt: { x: number; y: number } | null = null;
+canvas.addEventListener("pointerdown", (e) => (downAt = { x: e.clientX, y: e.clientY }));
+canvas.addEventListener("click", (e) => {
+  const dragged = downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4;
+  if (!placing || controls.mode !== "overview" || dragged) return;
+  const p = controls.floorAt(e.clientX, e.clientY);
+  if (!p) return;
+  if (!placing.at) {
+    placing.at = p;
+    updatePlacingHint();
+    return;
+  }
+  const heading = ((Math.atan2(p.x - placing.at.x, -(p.z - placing.at.z)) * 180) / Math.PI + 360) % 360;
+  finishPlacing(placing.id, placing.at.x, placing.at.z, heading);
+});
+canvas.addEventListener("mousemove", (e) => {
+  if (!placing?.at || controls.mode !== "overview") return;
+  const p = controls.floorAt(e.clientX, e.clientY);
+  if (!p) return;
+  const line = placeMarker.getObjectByName("aim") as THREE.Line;
+  line.geometry.setFromPoints([new THREE.Vector3(), new THREE.Vector3(p.x - placing.at.x, 0, p.z - placing.at.z)]);
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLInputElement) return;
+  if (e.code === "Tab") {
+    e.preventDefault();
+    document.querySelector<HTMLElement>("#scoreboard")!.hidden = false;
+  }
+  if (e.code === "Escape" && placing) {
+    placing = null;
+    updatePlacingHint();
+  }
+  const n = Number(e.key);
+  if (n >= 1 && n <= 9 && game.players[n - 1]) spectate(game.players[n - 1].id);
+  if (e.code === "KeyP") {
+    if (!selectedId) return feed.push("Pick a player with Place first");
+    if (controls.mode === "walk" || controls.mode === "fly") {
+      // Stand where they are in the 3D map, look where they look, press P.
+      const cam = controls.perspective;
+      finishPlacing(selectedId, cam.position.x, cam.position.z, yawToHeading(controls.facing));
+    } else {
+      startPlacing(selectedId);
+    }
+  }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Tab") document.querySelector<HTMLElement>("#scoreboard")!.hidden = true;
+});
+window.addEventListener("blur", () => (document.querySelector<HTMLElement>("#scoreboard")!.hidden = true));
+
+controls.onModeChange = (mode) => {
+  if (mode !== "follow") followId = null;
+  if (mode !== "overview" && placing) {
+    placing = null;
+    updatePlacingHint();
+  }
+  document.body.dataset.mode = mode;
+};
+document.body.dataset.mode = controls.mode;
+document.addEventListener("pointerlockchange", () => {
+  document.body.classList.toggle("playing", document.pointerLockElement === canvas);
+});
+
+const panelActions = {
+  spectate,
+  place: startPlacing,
+  remove: (id: string) => {
+    if (confirm(`Forget ${nameOf(id)}?`)) game.remove(id);
+  },
+};
+
+game.onStatus = (up) => {
+  feed.push(up ? "Connected to the game server" : "Game server offline", up ? "#3ccf8e" : "#ff5c6c");
+  renderPlayersPanel(game.players, selectedId, up, panelActions);
+};
+game.onMap = () => syncGameMap();
+game.onPlayers = (list) => {
+  players.set(list);
+  feed.diff(list);
+  renderScoreboard(list);
+  renderPlayersPanel(list, selectedId, game.connected, panelActions);
+  if (followId && !list.some((p) => p.id === followId && p.calibrated)) controls.setMode("walk");
+};
+renderPlayersPanel([], null, false, panelActions);
 
 // ---- Render loop ----------------------------------------------------------------------------
 
@@ -183,10 +375,23 @@ renderer.setAnimationLoop((now) => {
   you.position.set(eye.position.x, 1.0, eye.position.z);
   you.rotation.y = eye.rotation.y;
 
+  players.hiddenId = controls.mode === "follow" && !controls.thirdPerson ? followId : null;
+  players.animate(dt, controls.camera, canvas.clientWidth, canvas.clientHeight);
   renderer.render(scene, controls.camera);
+
+  const view = { x: eye.position.x, z: eye.position.z, yaw: eye.rotation.y };
+  const blips = players.poses();
+  if (controls.mode !== "overview") {
+    drawCompass(view, blips);
+    minimap.draw(view, blips, players.hiddenId);
+  }
   if (now - hudAt > 200) {
     hudAt = now;
-    setHud(controls.mode, eye.position, fps);
+    const mode = controls.mode === "follow"
+      ? `Watching ${nameOf(followId ?? "")}${controls.thirdPerson ? " (shoulder)" : ""}`
+      : { walk: "Walk", fly: "Fly", overview: "Map" }[controls.mode];
+    const online = game.players.filter((p) => p.connected).length;
+    setHud(mode, eye.position, fps, game.connected ? `${online} player${online === 1 ? "" : "s"} online` : "game server offline");
   }
 });
 

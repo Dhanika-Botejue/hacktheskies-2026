@@ -3,12 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HackTheSkies Spectator</title>
+    <title>HackTheSkies Host</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <canvas id="view"></canvas>
+    <div id="labels"></div>
 
+    <div id="crosshair"></div>
+    <div id="compass-wrap"><canvas id="compass"></canvas><span id="compass-deg"></span></div>
+    <div id="feed"></div>
+    <div id="minimap-wrap"><canvas id="minimap"></canvas><span id="minimap-scale"></span></div>
+    <div id="place-hint" hidden></div>
+    <div id="click-to-play">Click to play</div>
+
+    <div id="scoreboard" hidden>
+      <h1>Players</h1>
+      <table>
+        <thead><tr><th>Name</th><th>Link</th><th>Phone</th><th>Tracking</th><th>Accuracy</th><th>Steps</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="left">
     <aside id="maps-panel" class="panel">
       <header>
         <h1>Maps</h1>
@@ -28,6 +45,12 @@
         </div>
       </div>
     </aside>
+
+    <aside id="players-panel" class="panel">
+      <header><h1>Players</h1></header>
+      <ul id="player-list"></ul>
+    </aside>
+    </div>
 
     <aside id="connect-panel" class="panel">
       <header>
@@ -50,8 +73,9 @@
     <footer id="hud" class="panel">
       <span id="hud-mode"></span>
       <span id="hud-pos"></span>
+      <span id="hud-game"></span>
       <span id="hud-fps"></span>
-      <span class="keys">Click to look · WASD move · Q/E down/up · Shift fast · <b>F</b> walk/fly · <b>M</b> overview</span>
+      <span class="keys">WASD move · Space jump · Shift sprint · <b>F</b> fly · <b>M</b> map · <b>1–9</b> watch player · <b>Tab</b> players · <b>Esc</b> menu</span>
     </footer>
 
     <div id="drop-hint" hidden>Drop a .ply / .spz to add it as a map</div>

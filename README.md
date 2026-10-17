@@ -35,6 +35,32 @@ Needs Xcode and an iPhone with LiDAR (12 Pro or newer Pro) for the best results.
 
 After editing `app-ios/project.yml`, regenerate the project with XcodeGen (`xcodegen generate` in `app-ios/`).
 
+## Playing on the scanned map
+
+The viewer is also the host's game screen: it walks through the scan first-person like a shooter
+map and shows every player live, positioned by the game server (`run.py`, see `ios/README.md`).
+
+```sh
+.venv/bin/python run.py                 # game server: phones connect here (https://<laptop>:8443)
+cd viewer && npm run dev                # viewer at http://localhost:5173, proxies the game server at /game/
+```
+
+- The active map becomes the game map. The viewer sends the game server the scan's footprint
+  and a top-down floor plan, so the phones, the 2D host page (`/web/host.html`) and the tracker
+  all use the scan's floor coordinates (game `x, y` = viewer `X, Z` minus a fixed origin).
+- Players join from the **HTS Player** app (`ios/Player.swiftpm`) or `/web/phone.html` on Android.
+- Place each player once: **Place** in the Players panel, then click where they stand and the
+  way they face on the top-down map. You can also walk to their spot in first person, look the
+  way they face and press **P**.
+- Walls drawn on the 2D host page help the step-counting fallback. They are kept when the map
+  sharpens or the floor height changes; **Flip/Rotate** starts the game map over (place players again).
+
+Keys: click to play · WASD · Space jump · Shift sprint · **F** fly · **M** top-down map ·
+**1–9** watch a player (**V** over the shoulder, WASD takes over) · hold **Tab** for the
+player list · **−/=** minimap zoom · Esc for the menus.
+
+`GAME_SERVER` overrides where the viewer finds the game server (default `https://127.0.0.1:8443`).
+
 ## Testing without a phone
 
 ```sh

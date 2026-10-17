@@ -42,7 +42,6 @@ button, .btn {
 button:hover, .btn:hover { background: rgba(255, 255, 255, 0.16); }
 .row { display: flex; flex-wrap: wrap; gap: 6px; }
 
-#maps-panel { top: 12px; left: 12px; width: 300px; max-height: calc(100% - 90px); overflow-y: auto; }
 #map-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 #map-list li {
   border: 1px solid var(--border);
@@ -105,6 +104,190 @@ button:hover, .btn:hover { background: rgba(255, 255, 255, 0.16); }
 
 @media (max-width: 720px) {
   #connect-panel { display: none; }
-  #maps-panel { width: auto; right: 12px; max-height: 40%; }
   #hud .keys { display: none; }
+}
+
+/* ---- Game view: shooter-style HUD over the 3D map ---- */
+
+#left {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  width: 300px;
+  max-height: calc(100% - 90px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#left .panel { position: static; max-height: none; width: auto; }
+#maps-panel { overflow-y: auto; flex: 0 1 auto; min-height: 0; }
+#players-panel { overflow-y: auto; flex: 0 1 auto; min-height: 90px; }
+#player-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#player-list li { border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+#player-list li.active { border-color: #ffd34d; }
+#player-list .title { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+#player-list .name { font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+#player-list .meta { color: var(--muted); font-size: 12px; margin-top: 4px; display: flex; justify-content: space-between; gap: 8px; }
+#player-list button { padding: 2px 7px; font-size: 11px; }
+#player-list button:disabled { opacity: 0.4; cursor: default; }
+#player-list .delete { color: var(--muted); }
+#player-list code, #player-list .empty code { font-size: 11px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); flex: none; }
+.dot.on { background: var(--ok); }
+kbd {
+  font: 600 10px ui-monospace, monospace;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  color: var(--muted);
+}
+
+/* While the mouse is captured, the menus get out of the way like in a game. */
+body.playing #left, body.playing #connect-panel, body.playing #click-to-play { display: none; }
+#click-to-play {
+  position: fixed;
+  left: 50%;
+  top: calc(50% + 28px);
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+body[data-mode="overview"] #click-to-play,
+body[data-mode="overview"] #crosshair,
+body[data-mode="overview"] #compass-wrap,
+body[data-mode="overview"] #minimap-wrap { display: none; }
+
+#crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background:
+    linear-gradient(#fff, #fff) center / 2px 7px no-repeat,
+    linear-gradient(#fff, #fff) center / 7px 2px no-repeat;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+  opacity: 0.85;
+}
+#crosshair::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  clip-path: polygon(0 0, 35% 0, 35% 100%, 0 100%, 0 0, 100% 0, 100% 100%, 65% 100%, 65% 0);
+}
+
+#compass-wrap {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(460px, 50vw);
+  pointer-events: none;
+  text-align: center;
+}
+#compass {
+  width: 100%;
+  height: 34px;
+  display: block;
+  background: linear-gradient(90deg, transparent, rgba(10, 12, 18, 0.65) 20%, rgba(10, 12, 18, 0.65) 80%, transparent);
+  border-radius: 6px;
+}
+#compass-deg { font: 700 11px ui-sans-serif, system-ui; color: #ffd34d; font-variant-numeric: tabular-nums; }
+
+#feed {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+.feed-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(10, 12, 18, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: opacity 1s;
+}
+.feed-item.fade { opacity: 0; }
+
+#minimap-wrap { position: fixed; right: 16px; bottom: 60px; width: 210px; height: 210px; pointer-events: none; }
+#minimap { width: 100%; height: 100%; display: block; }
+#minimap-scale {
+  position: absolute;
+  bottom: -2px;
+  right: 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+#labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1.2;
+  text-shadow: 0 1px 2px #000, 0 0 6px #000;
+  white-space: nowrap;
+}
+.tag b { color: var(--c); font-size: 13px; }
+.tag span { color: #fff; opacity: 0.85; font-size: 11px; }
+.tag.offline { opacity: 0.5; }
+.tag.selected b { text-decoration: underline; }
+
+#place-hint {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #ffd34d;
+  color: #111;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+#scoreboard {
+  position: fixed;
+  left: 50%;
+  top: 18%;
+  transform: translateX(-50%);
+  min-width: min(640px, 92vw);
+  background: rgba(10, 12, 18, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+  backdrop-filter: blur(8px);
+}
+#scoreboard h1 { margin-bottom: 10px; }
+#scoreboard table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+#scoreboard th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; padding: 4px 8px; }
+#scoreboard td { padding: 6px 8px; border-top: 1px solid var(--border); }
+#scoreboard td:first-child { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+#scoreboard tr.offline { opacity: 0.5; }
+
+#hud-game { color: var(--muted); }
+
+@media (max-width: 720px) {
+  #left { width: auto; right: 12px; max-height: 45%; }
+  #minimap-wrap { width: 140px; height: 140px; }
 }

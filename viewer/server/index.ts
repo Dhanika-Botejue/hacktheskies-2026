@@ -3,8 +3,10 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import QRCode from "qrcode";
 import { createServer as createVite } from "vite";
@@ -15,6 +17,9 @@ import { enqueueTraining, resumeInterruptedTraining } from "./train.ts";
 
 const PORT = Number(process.env.PORT ?? 5173);
 const SPLAT_EXTS = [".ply", ".spz", ".splat", ".ksplat", ".sog"];
+// Python game server (run.py): tracks the players. Proxied under /game/ so the viewer reaches it
+// on its own origin, without tripping over the game server's self-signed certificate.
+const GAME_SERVER = new URL(process.env.GAME_SERVER ?? "https://127.0.0.1:8443");
 
 function lanAddress() {
   const ifaces = os.networkInterfaces();
@@ -184,6 +189,58 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   json(res, 404, { error: "not found" });
 }
 
+// ---- Game server proxy ----------------------------------------------------------------------
+
+function gameRequest(req: http.IncomingMessage) {
+  const lib = GAME_SERVER.protocol === "https:" ? https : http;
+  return lib.request({
+    hostname: GAME_SERVER.hostname,
+    port: GAME_SERVER.port,
+    path: req.url!.slice("/game".length) || "/",
+    method: req.method,
+    headers: { ...req.headers, host: GAME_SERVER.host },
+    rejectUnauthorized: false, // run.py's self-signed certificate
+  });
+}
+
+function proxyGame(req: http.IncomingMessage, res: http.ServerResponse) {
+  const upstream = gameRequest(req);
+  upstream.on("response", (up) => {
+    res.writeHead(up.statusCode ?? 502, up.headers);
+    up.pipe(res);
+  });
+  upstream.on("error", () => {
+    if (!res.headersSent) json(res, 502, { error: `game server not reachable at ${GAME_SERVER.origin}` });
+    else res.destroy();
+  });
+  req.pipe(upstream);
+}
+
+function proxyGameSocket(req: http.IncomingMessage, socket: Duplex, head: Buffer) {
+  const upstream = gameRequest(req);
+  upstream.on("upgrade", (up, upSocket, upHead) => {
+    const lines = [`HTTP/1.1 101 Switching Protocols`];
+    for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`);
+    socket.write(lines.join("\r\n") + "\r\n\r\n");
+    if (upHead.length) socket.write(upHead);
+    if (head.length) upSocket.write(head);
+    upSocket.pipe(socket).pipe(upSocket);
+    const close = () => {
+      socket.destroy();
+      upSocket.destroy();
+    };
+    socket.on("error", close);
+    upSocket.on("error", close);
+    socket.on("close", close);
+    upSocket.on("close", close);
+  });
+  upstream.on("response", (up) => {
+    socket.end(`HTTP/1.1 ${up.statusCode} ${up.statusMessage}\r\n\r\n`);
+  });
+  upstream.on("error", () => socket.destroy());
+  upstream.end();
+}
+
 const vite = await createVite({
   root: path.resolve(import.meta.dirname, ".."),
   server: { middlewareMode: true },
@@ -200,11 +257,17 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname.startsWith("/maps/")) return serveMapFile(res, decodeURIComponent(url.pathname.slice(6)));
+  if (url.pathname.startsWith("/game/")) return proxyGame(req, res);
   vite.middlewares(req, res);
+});
+
+server.on("upgrade", (req, socket, head) => {
+  if (req.url?.startsWith("/game/")) proxyGameSocket(req, socket, head);
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`\n  Viewer:          http://localhost:${PORT}`);
-  console.log(`  Phone app URL:   ${serverUrl}\n`);
+  console.log(`  Phone app URL:   ${serverUrl}`);
+  console.log(`  Game server:     ${GAME_SERVER.origin} (proxied at /game/)\n`);
   resumeInterruptedTraining();
 });

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 tag_detector.py
 ===============

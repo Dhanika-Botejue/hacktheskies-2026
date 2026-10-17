@@ -16,4 +16,4 @@ mediapipe==0.10.*
 pupil-apriltags==1.0.*
 
 # NumPy (used throughout; pinned loosely to avoid conflicts with mediapipe)
-numpy>=1.23,<2.0
+numpy>=1.26

@@ -262,7 +262,9 @@ class GameState:
         }
 
     def scores(self) -> dict:
-        """Thread-safe read (no mutation, so no lock needed)."""
+        """Thread-safe read. Flushes in-progress hold time before summing."""
+        for f in self.flags.values():
+            f.flush_time()
         red  = sum(f.time_red  for f in self.flags.values())
         blue = sum(f.time_blue for f in self.flags.values())
         return {

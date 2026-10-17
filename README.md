@@ -2,6 +2,8 @@
 
 Real-world capture the flag. Step 1: **scan the building with an iPhone → Gaussian-splat map → spectate it on the laptop.**
 
+**New here? Follow [SETUP.md](SETUP.md)** for the full how-to-run guide: laptop, both iPhone apps, scanning, and playing.
+
 ```
 iPhone app (ARKit)  ── Scan Map → Done → auto-upload ──▶  laptop server  ──▶  Brush trains a Gaussian splat (Metal)
  photos + camera poses + LiDAR points                        viewer/server        ──▶ map appears in the viewer, sharpening live

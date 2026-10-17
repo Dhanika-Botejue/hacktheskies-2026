@@ -1,0 +1,138 @@
+# Setup & how to run
+
+Real-world capture the flag: scan the play area with an iPhone into a 3D Gaussian-splat map, then
+watch players move through it live on the laptop, first-person like a shooter map.
+
+```
+HackTheSkies app ──scan──▶ viewer (Node, :5173) ──trains──▶ 3D map ──▶ game map
+HTS Player app   ──pose──▶ game server (Python, :8443) ──live positions──▶ viewer
+```
+
+## One-time setup
+
+### Laptop (Mac, Apple Silicon)
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # game server
+tools/setup.sh                                                       # Brush splat trainer -> tools/bin
+cd viewer && npm install                                             # viewer
+```
+
+You also need **Xcode** (Mac App Store) to install the iPhone apps.
+
+### iPhone apps
+
+There are two apps. Build each from Xcode with the iPhone plugged in.
+
+| App | Open in Xcode | Used for |
+|---|---|---|
+| **HackTheSkies** | `app-ios/HackTheSkies.xcodeproj` | Scanning the map |
+| **HTS Player** | `ios/Player.swiftpm` | Playing (streams your position) |
+
+For each app:
+
+1. Open it in Xcode.
+2. Signing & Capabilities → **Team** = your Apple ID (Xcode → Settings → Accounts; a free account works). If the bundle ID is taken, change it to something unique.
+3. Pick your iPhone as the run destination and press **⌘R**.
+
+First time only, on the iPhone:
+
+- Settings → Privacy & Security → **Developer Mode** on, then restart.
+- Settings → General → VPN & Device Management → trust your developer certificate.
+- Allow **camera** and **local network** access when asked.
+
+Apps signed with a free Apple ID stop opening after 7 days. Run them from Xcode again to fix that.
+
+A LiDAR iPhone (12 Pro or newer Pro) gives the best scans; other iPhones still work.
+
+## Every session
+
+The phone and laptop must be on the **same Wi-Fi**. Guest and campus networks often block devices
+from reaching each other; a phone hotspot works as a fallback.
+
+Start both servers, each in its own terminal:
+
+```sh
+.venv/bin/python run.py          # game server; prints the address phones join with, e.g. 10.110.0.189:8443
+cd viewer && npm run dev         # viewer; open http://localhost:5173 on the laptop
+```
+
+If macOS asks whether Python or Node may accept incoming connections, click **Allow**.
+
+## 1. Scan the map
+
+1. Open HackTheSkies and connect it to the laptop, either way:
+   - **QR code:** point the regular Camera app at the QR code in the viewer (top right), tap the yellow `hacktheskies://` banner, then tap **Open**.
+   - **By hand:** tap **Enter address manually** and type the URL shown under the QR code, e.g. `http://10.110.0.189:5173`.
+
+   A green dot next to the address means it's connected.
+2. Tap **Scan Map** and walk the whole play area slowly. Cover the floor and walls, and slow down when the app says so.
+3. Tap **Done**. The scan uploads and trains on the laptop. A rough preview appears in about a
+   minute and sharpens until training finishes (15,000 steps, several minutes).
+
+## 2. Make it the game map
+
+Keep the viewer (http://localhost:5173) open with the scan selected. Within a few seconds the feed says
+**Game map is now "…"**: the game server now uses the scan's floor, and the 2D host page shows it as
+"from 3D scan".
+
+If the map looks wrong, press **Esc** and use **Adjust map**:
+
+- **Flip** if it's upside down.
+- **Floor ▲ / ▼** if the eye height is off.
+- **Rotate 90°** to turn it.
+
+Do this before placing players. Flip and Rotate reset player positions and walls.
+
+## 3. Join and place players
+
+1. Open **HTS Player**, enter a name and the game server address from `run.py` (e.g. `10.110.0.189:8443`), and tap **Join**.
+2. Hold the phone upright with the back camera facing forward, as if strapped to your chest. Stand still at a spot that's easy to recognise in the scan, like a corner or a doorway.
+3. In the viewer's **Players** panel, click **Place**. On the top-down map, click where the player stands, then click the direction they face.
+   - Or: walk to their spot in the 3D view, look the way they face, and press **P**.
+4. The phone shows **In game · camera**, and the player moves live on the laptop.
+
+## Viewer controls
+
+| Key | Action |
+|---|---|
+| Click | Play (captures the mouse) · **Esc** brings back the menus |
+| WASD · Space · Shift | Move · jump · sprint |
+| F | Fly / walk |
+| M | Top-down map (drag to pan, scroll to zoom) |
+| 1–9 | Watch a player through their eyes · **V** over the shoulder · WASD takes over |
+| Tab (hold) | Player list |
+| − / = | Minimap zoom |
+| P | Place the selected player where you stand |
+
+The 2D host page is at `https://localhost:8443/web/host.html` (accept the certificate warning). Use it
+to draw walls, which help tracking when it falls back to step counting.
+
+## Testing without phones
+
+```sh
+# Fake scan in the format the app uploads (needs: pip install pillow numpy)
+python3 tools/fake_scan.py /tmp/fakeroom --zip
+curl -X POST --data-binary @/tmp/fakeroom.zip "localhost:5173/api/scans?name=Fake%20room"
+
+# Simulated players (they walk the demo floor's coordinates)
+.venv/bin/python -m sim.simulate --players 3
+
+# Tests
+.venv/bin/python -m pytest -q
+cd viewer && npm run typecheck
+```
+
+For quicker training while testing, start the viewer with `TRAIN_STEPS=2000 EXPORT_EVERY=500 npm run dev`.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| HackTheSkies says "Not connected to a laptop" | The QR link didn't reach the app. Use **Enter address manually** with the URL under the QR code. |
+| Red dot next to the laptop address | Same Wi-Fi? Is the viewer running? Is Local Network allowed for the app in iPhone Settings? Check that `http://<laptop-ip>:5173/api/maps` loads in the iPhone's Safari. |
+| HTS Player won't connect | The address must end in `:8443`, `run.py` must be running, and the app needs Local Network permission. |
+| Viewer footer says "game server offline" | Start `run.py`. If it runs elsewhere, set `GAME_SERVER=https://host:8443` before `npm run dev`. |
+| Scan finished but the game map didn't change | Open or refresh http://localhost:5173 with the scan selected. The viewer sends the map to the game server. |
+| Player drifts or faces the wrong way | Place them again. Drawing walls on the 2D host page also helps the step-counting fallback. |
+| Training failed | Click the map, check the error, and make sure `tools/setup.sh` ran (`tools/bin/brush_app` exists). |

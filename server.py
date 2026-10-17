@@ -64,8 +64,8 @@ POSE_ARMED_THRESHOLD = 0.75   # yellow reticle; firing needs hand['ready'] (see 
 # ready pose and an aim-on-tag each happened within this window — not
 # necessarily in the same frame.  Tags that drop out are also remembered at
 # their last position for TAG_MEMORY_S so the finger can still aim at them.
-TRIGGER_WINDOW_S     = 0.4
-TAG_MEMORY_S         = 0.4
+TRIGGER_WINDOW_S     = 0.8
+TAG_MEMORY_S         = 0.8
 MAX_FRAME_BYTES      = 2 * 1024 * 1024
 STATE_BROADCAST_INTERVAL = 0.5
 DIAG_LOG_INTERVAL    = 1.0   # seconds between per-player "why didn't it fire" log lines

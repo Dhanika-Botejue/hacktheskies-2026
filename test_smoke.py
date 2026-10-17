@@ -125,7 +125,16 @@ try:
     check("aim: far tiny tag hit within a few degrees",
           lambda: pick_aimed_tag([fake_tag(5, 1150, 360, r=6)], k, t)['id'] == 5)
     check("aim: far tiny tag missed when well off-angle",
-          lambda: pick_aimed_tag([fake_tag(5, 1150, 450, r=6)], k, t) is None)
+          lambda: pick_aimed_tag([fake_tag(5, 1150, 600, r=6)], k, t) is None)   # ~17 deg off
+
+    from hand_detector import ready_to_fire
+    pose = lambda **kw: {'index_extended': True, 'thumb_extended': False, 'middle_curled': False,
+                         'ring_curled': False, 'pinky_curled': False, **kw}
+    check("pose: fires without thumb",          lambda: ready_to_fire(pose(middle_curled=True)))
+    check("pose: one curled finger is enough",  lambda: ready_to_fire(pose(ring_curled=True)))
+    check("pose: open hand doesn't fire",       lambda: not ready_to_fire(pose(thumb_extended=True)))
+    check("pose: index must be out",            lambda: not ready_to_fire(pose(index_extended=False,
+                                                         middle_curled=True, ring_curled=True)))
     check("aim: finger at camera → tag under tip",
           lambda: pick_aimed_tag([fake_tag(4, 155, 305)], (150, 300), (152, 301))['id'] == 4)
 

@@ -373,7 +373,7 @@ function statusText(d) {
     case 'no_hand':            return [ids ? `No hand seen · tags in view: ${ids}` : 'No hand seen · no tags in view', ''];
     case 'no_tag_visible':     return ['✋ Hand OK · no tag detected in view', ''];
     case 'not_aimed':          return [`👀 Tag ${ids} in view · point your finger at it`, 'warn'];
-    case 'pose_not_ready':     return [`🎯 Aiming at P${tgt} · fix the ✗ fingers to fire (pinky optional)`, 'warn'];
+    case 'pose_not_ready':     return [`🎯 Aiming at P${tgt} · point your index, curl middle/ring to fire`, 'warn'];
     case 'cooldown':           return [`🎯 P${tgt} · reloading ${d.cooldown_left}s`, 'warn'];
     case 'target_dead':        return [`🎯 P${tgt} is already down`, 'warn'];
     case 'same_team':          return [`🎯 P${tgt} is on your team`, 'warn'];

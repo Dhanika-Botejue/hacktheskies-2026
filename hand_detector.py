@@ -29,8 +29,8 @@ work regardless of which way the hand is pointing — sideways, at the camera,
 or up.  The index finger's direction is what aims; see tag_detector.pick_aimed_tag.
 
 Returns a confidence score 0.0-1.0 (fraction of criteria met).
-A score >= 0.75 means the hand is "armed"; "ready" (allowed to fire) means
-every check in REQUIRED_TO_FIRE passes.
+A score >= 0.75 means the hand is "armed"; "ready" (allowed to fire) is
+decided by ready_to_fire().
 
 Thread-safety
 -------------
@@ -68,12 +68,18 @@ PINKY_TIP  = 20
 # webcam frames: MediaPipe reads loosely tucked fingers at ~1.05-1.25 reach, so
 # curl is judged *relative to the index* rather than against a fixed cut-off.
 INDEX_MIN_REACH = 1.0  # index must reach at least this far
-CURL_GAP        = 0.15 # middle/ring must reach at least this much less than the index
+CURL_GAP        = 0.08 # middle/ring must reach at least this much less than the index
 THUMB_OUT_RATIO = 0.7  # thumb raised if |thumb tip->index knuckle| > this * palm length
 
-# Checks that must all pass to fire.  The pinky is shown but not required: it
-# reads noisily when tucked and was the lone failing check in most near-misses.
-REQUIRED_TO_FIRE = ('index_extended', 'thumb_extended', 'middle_curled', 'ring_curled')
+
+def ready_to_fire(criteria: dict) -> bool:
+    """
+    Lenient on purpose: index out plus middle OR ring tucked.  In real play logs
+    most aimed-but-rejected frames failed thumb and/or one curl check (hand seen
+    edge-on or foreshortened), so the thumb and pinky are shown but not required.
+    An open hand still fails: its middle and ring reach as far as the index.
+    """
+    return criteria['index_extended'] and (criteria['middle_curled'] or criteria['ring_curled'])
 
 DEFAULT_MODEL = pathlib.Path(__file__).parent / 'hand_landmarker.task'
 
@@ -163,7 +169,7 @@ class HandDetector:
             confidence : float       0.0-1.0 (fraction of criteria met)
             detected   : bool        any hand found?
             armed      : bool        confidence >= 0.75
-            ready      : bool        every REQUIRED_TO_FIRE check passes
+            ready      : bool        ready_to_fire(criteria)
             landmarks  : list|None   [(x, y), ...] normalised, or None
             criteria   : dict        per-criterion booleans (for debug)
             hands      : list        {confidence, armed, landmarks, criteria} per hand
@@ -180,7 +186,7 @@ class HandDetector:
             hands.append({
                 'confidence': round(confidence, 3),
                 'armed':      confidence >= 0.75,
-                'ready':      all(criteria[k] for k in REQUIRED_TO_FIRE),
+                'ready':      ready_to_fire(criteria),
                 'landmarks':  [(lm.x, lm.y) for lm in lms],
                 'criteria':   criteria,
             })

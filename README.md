@@ -46,14 +46,15 @@ All devices must be on the same Wi-Fi network.
 
 ```
 pose ≥ 0.75  →  reticle turns yellow ("armed")
-index out + thumb up + middle & ring tucked   ┐  both within the last
-index finger points at a player AprilTag      ┘  0.4 s  →  SHOT FIRED
+index out + middle OR ring tucked             ┐  both within the last
+index finger points roughly at a player tag   ┘  0.8 s  →  SHOT FIRED
 ```
 
 Detection flickers frame to frame (blur, distance), so the pose and the aim don't
 have to land in the same frame (`TRIGGER_WINDOW_S` in `server.py`), and a tag that
-drops out is remembered at its last position for `TAG_MEMORY_S`. The pinky is shown
-on the phone but not required — it reads noisily when tucked.
+drops out is remembered at its last position for `TAG_MEMORY_S`. The thumb and pinky
+are shown on the phone but not required (`ready_to_fire` in `hand_detector.py`) —
+they read noisily when the hand is edge-on to the camera.
 
 Aiming: a 2D ray from the index knuckle through the fingertip is cast across the
 frame; the player tag closest to that ray (relative to its on-screen size) is the
@@ -97,8 +98,8 @@ Edit the constants at the top of `server.py`:
 
 ```python
 POSE_ARMED_THRESHOLD = 0.75   # show armed reticle
-TRIGGER_WINDOW_S     = 0.4    # pose and aim may be this far apart in time
-TAG_MEMORY_S         = 0.4    # how long a missed tag is still aimable
+TRIGGER_WINDOW_S     = 0.8    # pose and aim may be this far apart in time
+TAG_MEMORY_S         = 0.8    # how long a missed tag is still aimable
 ```
 
 Edit `game_state.py` for:

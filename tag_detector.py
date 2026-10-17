@@ -162,10 +162,10 @@ class TagDetector:
 # camera and its 2D direction is noise — fall back to "tag under the fingertip".
 AIM_MIN_FINGER_PX = 20.0
 # Hit if the finger ray passes within this many tag-radii of the tag centre...
-AIM_TOLERANCE = 1.3
+AIM_TOLERANCE = 2.5
 # ...or within this angle of it, seen from the fingertip.  Far-away tags are tiny,
-# but the finger's direction is only accurate to a few degrees.
-AIM_MIN_ANGLE_DEG = 5.0
+# and in play people point roughly, not precisely — keep this generous.
+AIM_MIN_ANGLE_DEG = 12.0
 
 
 def pick_aimed_tag(

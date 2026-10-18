@@ -27,6 +27,8 @@ final class Tracker: NSObject, ARSessionDelegate {
     @ObservationIgnored private var epoch = 0
     /// Receives every camera pose in raw AR space: (x, z, yaw, tracking, epoch, timestamp).
     @ObservationIgnored var onPose: ((Double, Double, Double, Bool, Int, Double) -> Void)?
+    /// Receives every camera frame: the shooting server looks at them for finger guns and tags.
+    @ObservationIgnored var onFrame: ((ARFrame) -> Void)?
 
     override init() {
         super.init()
@@ -80,6 +82,7 @@ final class Tracker: NSObject, ARSessionDelegate {
         }
         let x = Double(t.columns.3.x), z = Double(t.columns.3.z)
         onPose?(x, z, yaw, tracking, epoch, frame.timestamp)
+        onFrame?(frame)
         guard tracking else { return }
 
         if origin == nil {

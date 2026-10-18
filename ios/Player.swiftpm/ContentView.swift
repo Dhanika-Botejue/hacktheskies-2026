@@ -14,10 +14,16 @@ struct PlayerApp: App {
 struct ContentView: View {
     @State private var tracker = Tracker()
     @State private var client = GameClient()
+    @State private var combat = CombatClient()
     @State private var follow = true
     @State private var joined = false
+    @State private var joinError: String?
     @AppStorage("server") private var server = "10.110.0.189:8443"
     @AppStorage("name") private var name = ""
+    @AppStorage("tag") private var tag = 1  // number on the AprilTag worn on your chest
+    @AppStorage("team") private var team = "red"
+
+    private static let teamColors = ["red": Color(red: 1, green: 0.3, blue: 0.37), "blue": Color(red: 0.3, green: 0.64, blue: 1)]
 
     private static let panel = Color(red: 0.11, green: 0.12, blue: 0.15)
 
@@ -27,6 +33,7 @@ struct ContentView: View {
 
             VStack(spacing: 0) {
                 gameBar
+                if joined { combatBar }
                 HStack(spacing: 1) {
                     stat("Distance", String(format: "%.1f m", tracker.distance))
                     stat("Speed", String(format: "%.1f m/s", tracker.speed))
@@ -57,10 +64,19 @@ struct ContentView: View {
                 .background(Self.panel)
             }
         }
+        .overlay {
+            // Hit feedback you can catch from the corner of your eye.
+            flashColor.opacity(combat.flash == nil ? 0 : 0.45)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .animation(.easeOut(duration: 0.35), value: combat.flash)
+        }
         .onAppear {
             tracker.onPose = { [client] x, z, yaw, tracking, epoch, time in
                 client.cameraPose(x: x, z: z, yaw: yaw, tracking: tracking, epoch: epoch, time: time)
             }
+            // The same camera frames go to the shooting server: one camera does both jobs.
+            tracker.onFrame = { [combat] frame in combat.offer(frame) }
             tracker.start()
             UIApplication.shared.isIdleTimerDisabled = true  // screen stays on while strapped to the chest
         }
@@ -78,6 +94,7 @@ struct ContentView: View {
                     Text("\(client.steps) steps").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                     Button("Leave") {
                         client.disconnect()
+                        combat.disconnect()
                         joined = false
                     }
                     .font(.footnote)
@@ -90,19 +107,82 @@ struct ContentView: View {
                         .keyboardType(.numbersAndPunctuation)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Button("Join") {
-                        client.connect(server: server, name: name.isEmpty ? "iPhone" : name)
-                        joined = true
-                    }
-                    .buttonStyle(.borderedProminent)
                 }
-                if let error = client.error {
+                HStack {
+                    Text("Tag #").font(.footnote).foregroundStyle(.secondary)
+                    TextField("1–34", value: $tag, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.numberPad)
+                        .frame(width: 56)
+                    Picker("Team", selection: $team) {
+                        Text("Red").tag("red")
+                        Text("Blue").tag("blue")
+                    }
+                    .pickerStyle(.segmented)
+                    Button("Join") { join() }
+                        .buttonStyle(.borderedProminent)
+                }
+                if let error = joinError ?? client.error ?? combat.error {
                     Text(error).font(.footnote).foregroundStyle(.red)
                 }
             }
         }
         .padding(10)
         .background(Self.panel)
+    }
+
+    private func join() {
+        guard (1...34).contains(tag) else {
+            joinError = "Tag # is the number on your printed chest tag (1–34)"
+            return
+        }
+        joinError = nil
+        client.connect(server: server, name: name.isEmpty ? "iPhone" : name, tag: tag, team: team)
+        combat.connect(server: server, tag: tag, team: team)
+        joined = true
+    }
+
+    /// Shooting: hit points, gun and what the camera sees. Spoken aloud too.
+    @ViewBuilder private var combatBar: some View {
+        let color = Self.teamColors[team] ?? .white
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Circle().fill(combat.registered ? TrailCanvas.green : Color.red).frame(width: 8, height: 8)
+                Text("#\(tag) \(team.capitalized)").font(.footnote.bold()).foregroundStyle(color)
+                Text(String(repeating: "♥", count: max(0, combat.hp)) + String(repeating: "♡", count: max(0, combat.maxHp - combat.hp)))
+                    .foregroundStyle(Color(red: 1, green: 0.42, blue: 0.5))
+                Text(combat.alive ? gunText : "DOWN").font(.footnote.bold())
+                    .foregroundStyle(combat.alive && combat.gun == "ready" ? TrailCanvas.green : TrailCanvas.yellow)
+                Spacer()
+                Text(combat.score).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            HStack {
+                Text(combat.error ?? combat.status).font(.footnote).foregroundStyle(combat.error == nil ? Color.primary : .red)
+                Spacer()
+                Text("🎤 \(combat.mic)").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Self.panel.opacity(0.95))
+        .overlay(alignment: .leading) { Rectangle().fill(color).frame(width: 3) }
+    }
+
+    private var gunText: String {
+        switch combat.gun {
+        case "reload": "CLAP TO RELOAD"
+        case "arming": "RELOADING"
+        default: "GUN READY"
+        }
+    }
+
+    private var flashColor: Color {
+        switch combat.flash {
+        case .hit: TrailCanvas.green
+        case .hurt: .orange
+        case .down: .red
+        case nil: .clear
+        }
     }
 
     private func stat(_ label: String, _ value: String) -> some View {

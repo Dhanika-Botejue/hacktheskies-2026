@@ -174,6 +174,9 @@ function handleMessage(d) {
     players = d.players || {};
     flags   = d.flags   || {};
     gameActive = d.game_active;
+    // Buttons follow the server, so a dashboard opened/refreshed mid-game can still Stop
+    $btnStart.disabled = gameActive;
+    $btnStop.disabled  = !gameActive;
     updateScores(d.scores);
     renderPlayers();
     renderMap();
@@ -193,7 +196,8 @@ function handleMessage(d) {
     addLog(`Player ${d.player.player_id} (${d.player.team}) joined`, 'sys');
   }
   else if (d.type === 'player_left') {
-    addLog(`Player ${d.player_id} left`, 'sys');
+    addLog(d.kept ? `Player ${d.player_id}'s phone disconnected (kills kept; it can rejoin)`
+                  : `Player ${d.player_id} left`, 'sys');
   }
   else if (d.type === 'game_started') {
     gameActive = true; startTime = Date.now();
@@ -282,7 +286,7 @@ function renderPlayers() {
   $playerList.innerHTML = Object.values(players).map(p => `
     <div class="player-row ${p.alive ? '' : 'dead'}">
       <div class="dot" style="background:${p.team === 'red' ? '#f87171' : '#60a5fa'}"></div>
-      <span class="name">P${p.player_id}</span>
+      <span class="name">P${p.player_id}${p.connected === false ? ' 📵 offline' : ''}</span>
       <span class="status">${p.kills}K / ${p.deaths}D · ${p.alive ? '❤️'.repeat(p.hp) + '🖤'.repeat(p.max_hp - p.hp) : `💀 ${p.seconds_to_respawn}s`}</span>
     </div>
   `).join('');

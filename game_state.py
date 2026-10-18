@@ -26,15 +26,21 @@ class Gun:
     """
     One-handed gun.  While loaded it fires on every frame that aims at a tag,
     until a shot actually hits (misses don't empty it).  After a hit it is
-    empty until the camera sees a clap (both hands together), and then fires
-    again ARM_DELAY_S later.  Starts loaded and ready; respawn resets it.
+    empty until a reload clap (heard by the phone's mic, or seen by the
+    camera), and then fires again ARM_DELAY_S later.  Starts loaded and ready;
+    respawn and a new game reset it.
+
+    reloads counts real reloads (not resets), so the phone can play the reload
+    sound exactly once per clap.
     """
     loaded: bool = True
     loaded_at: float = float('-inf')
+    reloads: int = 0
 
     def update(self, clapped: bool, now: float) -> None:
         if clapped and not self.loaded:
             self.loaded, self.loaded_at = True, now
+            self.reloads += 1
 
     def arming_left(self, now: float) -> float:
         return max(0.0, ARM_DELAY_S - (now - self.loaded_at))
@@ -66,6 +72,7 @@ class Player:
     deaths: int = 0
     gun: Gun = field(default_factory=Gun)
     ws: Any = field(default=None, repr=False)
+    connected: bool = True       # False: phone dropped mid-game; kept so kills still count
 
     def seconds_until_respawn(self) -> float:
         if self.alive:
@@ -79,6 +86,10 @@ class Player:
         log.info(f'Player {self.player_id} died (deaths={self.deaths})')
 
     def respawn(self):
+        """Back in the game: full HP and a loaded gun.  Call this from whatever
+        decides respawning (the 10 s timer below is a placeholder for the
+        walk-back-to-your-spawn-point code); the phone plays its "Back in"
+        sound on its own when it sees the player alive again."""
         self.alive = True
         self.hp = MAX_HP
         self.respawn_at = 0.0
@@ -98,6 +109,7 @@ class Player:
             'max_hp':             MAX_HP,
             'kills':              self.kills,
             'deaths':             self.deaths,
+            'connected':          self.connected,
             'respawn_at':         self.respawn_at if not self.alive else None,
             'seconds_to_respawn': round(self.seconds_until_respawn(), 1),
         }
@@ -142,22 +154,34 @@ class GameState:
     # ── Player management ────────────────────────────────────────────────
 
     async def add_player(self, player_id: int, team: str, ws) -> Player:
+        """Register a phone.  A phone re-joining as the same player (Wi-Fi drop,
+        page refresh) gets its player back exactly as it was — HP, gun, kills,
+        alive or down — not a fresh one, so reconnecting is never a free heal."""
         async with self._lock:
+            p = self.players.get(player_id)
+            if p is not None and p.team == team:
+                p.ws, p.connected = ws, True
+                log.info(f'Player {player_id} rejoined (hp={p.hp}, alive={p.alive})')
+                return p
             p = Player(player_id=player_id, team=team, ws=ws)
             self.players[player_id] = p
             log.info(f'Registered player {player_id} team={team}')
             return p
 
-    async def remove_player(self, player_id: int, ws=None) -> bool:
-        """Remove a player.  If ws is given, only remove if that socket still owns
-        the registration — a phone that reconnected must not be removed by its old
-        socket closing late.  Returns True if removed."""
+    async def remove_player(self, player_id: int, ws=None) -> Optional[str]:
+        """A phone disconnected.  If ws is given and a newer socket has taken the
+        player over (it rejoined), nothing happens: returns None.  During a game
+        the player is kept, marked offline — their kills still count for the
+        team and they can rejoin: returns 'offline'.  Otherwise: 'removed'."""
         async with self._lock:
             p = self.players.get(player_id)
             if p is None or (ws is not None and p.ws is not ws):
-                return False
+                return None
+            if self.game_active:
+                p.ws, p.connected = None, False
+                return 'offline'
             del self.players[player_id]
-            return True
+            return 'removed'
 
     # ── Shot resolution ──────────────────────────────────────────────────
 
@@ -217,6 +241,9 @@ class GameState:
         async with self._lock:
             self.game_active = True
             self.game_start  = time.time()
+            # Players whose phones left during the last game aren't in this one
+            for pid in [pid for pid, p in self.players.items() if not p.connected]:
+                del self.players[pid]
             for p in self.players.values():
                 p.alive      = True
                 p.hp         = MAX_HP

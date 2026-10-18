@@ -40,6 +40,12 @@ import pupil_apriltags as apriltag
 
 TAG_FAMILY = 'tag25h9'
 
+# Player IDs must have a tag in the family: tag25h9 has 35 codes (IDs 0-34), and
+# tag 0 isn't a player, so players are 1-34.  An ID with no tag could never be
+# shot, so the server refuses it.
+_FAMILY_CODES = {'tag16h5': 30, 'tag25h9': 35, 'tag36h11': 587}
+MAX_PLAYER_ID = min(99, _FAMILY_CODES[TAG_FAMILY] - 1)
+
 # Minimum decision margin (0–∞).  Values < 20 are usually false positives.
 _MIN_MARGIN = 20.0
 

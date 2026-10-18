@@ -26,10 +26,32 @@ pip install -r requirements.txt
 python server.py
 
 # 3. Host dashboard  → http://<LAN-IP>:8765/
-# 4. Each player opens → http://<LAN-IP>:8765/phone
+# 4. Each player opens → https://<LAN-IP>:8766/phone   (https: phone cameras need it;
+#    tap through the self-signed certificate warning once)
 ```
 
-All devices must be on the same Wi-Fi network.
+All devices must be on the same Wi-Fi network. The server prints the exact
+addresses when it starts.
+
+## Testing
+
+No camera, phone or running server needed — each test starts its own server:
+
+```bash
+python test_smoke.py   # unit tests: detectors, aiming, the gun, claps, scoring
+python test_gun.py     # the whole gun end to end over real WebSockets: hits, HP,
+                       # kills, mic + camera reload, whose clap it was, reconnects
+python test_api.py     # real camera pipeline on real JPEGs (printed tag -> hit),
+                       # web pages and downloads
+```
+
+## Respawning (for the spawn-point code)
+
+Respawning is a placeholder: `GameState.check_auto_respawns` brings a player back
+10 s after dying. Replace it with the walk-back-to-your-spawn-point logic, and when
+a player should come back call `player.respawn()` — it refills HP and reloads the
+gun, and the phone plays its "Back in" sound by itself when it sees the player
+alive again.
 
 ## File map
 
@@ -62,20 +84,31 @@ already down) don't empty the gun; only a hit does. The gun is `game_state.Gun`
 
 Reload claps are heard by the phone's **microphone** (`listenForClap` in
 `static/phone.html`): a loud, sharp peak well above the room's background level
-(`CLAP_MIN_PEAK`, `CLAP_MIN_CREST`, `CLAP_OVER_BG`), ignored while the phone's own
-sounds play; the phone then sends `{"type":"clap"}`. The camera can also see a clap
-(backup, either one reloads) — on camera alone most claps were missed, because
-pressed palms read as one hand and the clap itself is motion-blurred. Camera claps
-are detected across frames by `hand_detector.ClapTracker`:
+(`CLAP_MIN_PEAK`, `CLAP_MIN_CREST`, `CLAP_OVER_BG`). The phone's own sounds can't
+reload it: the sharp parts of them (gunshot/impact noise, speech, the first 50 ms of
+each note) block claps until 0.3 s after they end, measured by rendering every sound.
+Every phone reports every clap with its loudness (`{"type":"clap","peak":…}`), and
+the server gives each clap to the phone that heard it loudest
+(`game_state.ClapReferee`), so a clap next to you reloads the clapper, not you. The
+camera can also see a clap (backup, either one reloads) — on camera alone most
+claps were missed, because pressed palms read as one hand and the clap itself is
+motion-blurred. Camera claps are detected across frames by `hand_detector.ClapTracker`:
 two hands close together, or two hands approaching that then merge into one hand or
-blur out within 0.5 s (pressed palms often read as one hand). Tune with
-`CLAP_MAX_PALMS` / `CLAP_NEAR_PALMS` / `CLAP_WINDOW_S`. While a player is waiting to
-reload, the server logs every frame (`hands=`, `own=`, `gap=`) to show why a clap
-did or didn't register.
+blur out within 0.8 s. Tune with `CLAP_MAX_PALMS` / `CLAP_NEAR_PALMS` /
+`CLAP_WINDOW_S`. While a player is waiting to reload, the server logs every frame
+(`hands=`, `own=`, `gap=`) to show why a clap did or didn't register. Nobody can
+reload while down.
+
+Phones dropping off the Wi-Fi: a phone that rejoins as the same player (same ID and
+team) gets that player back exactly as they were — HP, gun, kills, down or alive —
+never a fresh one. A phone that disconnects mid-game stays in the game marked
+offline, so its kills still count; it's noticed within ~15 s even if it vanished
+silently. The next game drops players whose phones never came back.
 
 Detection flickers frame to frame (blur, distance), so an aim at a tag still counts
 for `TRIGGER_WINDOW_S` (`server.py`), and a tag that drops out is remembered at its
-last position for `TAG_MEMORY_S`.
+last position for `TAG_MEMORY_S`. Going down, raising your second hand, or the game
+stopping cancels any aim in progress.
 
 Aiming: a 2D ray from the index knuckle through the fingertip is cast across the
 frame; the player tag closest to that ray (relative to its on-screen size) is the
@@ -94,7 +127,7 @@ aiming). Checked on 3D world landmarks, so any hand orientation works:
 
 | ID range | Meaning |
 |----------|---------|
-| 1–99 | Player bibs (ID = player number) |
+| 1–34 | Player bibs (ID = player number; tag25h9 has no tags above 34, so the server refuses higher IDs — nobody could shoot them) |
 | 100 | Red team base |
 | 101 | Blue team base |
 | 200+ | Flag markers (index = ID − 200) |

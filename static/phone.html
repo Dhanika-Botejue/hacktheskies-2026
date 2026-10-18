@@ -98,8 +98,8 @@
      Make a finger gun with one hand and point it at a tag.<br>
      After every hit, clap loudly near the phone to reload (allow the microphone).</p>
 
-  <label>Your bib number (player ID 1–99)</label>
-  <input id="pid" type="number" min="1" max="99" placeholder="e.g. 7"/>
+  <label>Your bib number (player ID 1–34)</label>
+  <input id="pid" type="number" min="1" max="34" placeholder="e.g. 7"/>
 
   <label>Team</label>
   <select id="team">
@@ -172,7 +172,9 @@ let sending   = false;
 let playerId  = null;
 let team      = null;
 let alive     = true;
-let lastGun   = null;   // gun state last frame, to play reload/ready sounds on change
+let lastGun   = null;   // gun state last frame, to play the "ready" sound on change
+let lastReloads = null; // server's reload counter last frame: +1 = a clap reloaded the gun
+let errorShown = false;
 let inGame    = null;   // null = not known yet (joined mid-game: no start sound)
 let respawnAt = null;
 
@@ -211,11 +213,20 @@ $srvIn.value  = params.get('srv')  || location.host || saved.srv || '';
 $pidIn.value  = params.get('pid')  || saved.pid  || '';
 $teamIn.value = params.get('team') || saved.team || 'red';
 
+// Player IDs are the tag numbers printed on the bibs (tag25h9 has 1-34)
+const MAX_PLAYER_ID = 34;
+let joining = false;   // a second tap on Join must not open a second connection
+
 document.getElementById('go').addEventListener('click', async () => {
+  if (joining) return;
   playerId = parseInt($pidIn.value);
   team     = $teamIn.value;
   const srv = $srvIn.value.trim();
   if (!playerId || !srv) { alert('Fill in all fields'); return; }
+  if (playerId < 1 || playerId > MAX_PLAYER_ID) {
+    alert(`Player ID must be 1-${MAX_PLAYER_ID}: the number on your printed tag`); return;
+  }
+  joining = true;
   unlockAudio();
   // Sound check: a beep on Join if audio works.  (Auto-join via ?pid= runs before
   // the sound code below has loaded, so this must not be allowed to throw.)
@@ -233,7 +244,7 @@ document.getElementById('go').addEventListener('click', async () => {
     });
   } catch {
     try { stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); }
-    catch (e) { alert('Camera access denied: ' + e.message); return; }
+    catch (e) { joining = false; alert('Camera access denied: ' + e.message); return; }
   }
   startClapMic(stream);
 
@@ -319,13 +330,26 @@ async function startSendLoop() {
 
 // ─── Message handler ──────────────────────────────────────────────────────
 function handleMessage(d) {
+  if (d.error) {
+    // e.g. a player ID with no printed tag, or another phone joined as this player
+    if (d.error === 'invalid_player_id' && !errorShown) {
+      errorShown = true;
+      alert(`Player ID must be 1-${d.max_player_id}: the number on your printed tag`);
+    }
+    $tgt.textContent = '⚠️ ' + d.error.replace(/_/g, ' ');
+    $tgt.className   = 'warn';
+    return;
+  }
+
   if (d.type === 'frame_result') {
     $idle.classList.remove('show');
 
     // Players can't see the screen (phone on a lanyard): every state change
     // they need to know about is a sound.
-    if (inGame === false) sfx.start();             // idle -> playing
-    else if (!alive && d.alive) sfx.respawn();      // back in after being downed
+    const justStarted = inGame === false;            // idle -> playing
+    const wasAlive    = alive;
+    if (justStarted) sfx.start();
+    else if (!alive && d.alive) sfx.respawn();       // back in after being downed
     inGame    = true;
     alive     = d.alive;
     respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;
@@ -348,10 +372,21 @@ function handleMessage(d) {
     const hasTarget = d.aiming_tag_id !== null;
     $rtcl.className = d.gun !== 'ready' ? '' : (d.fire_ready && hasTarget) ? 'locked' : d.armed ? 'armed' : '';
 
-    // Gun sounds: you can't see the screen with the phone on your chest
-    if (alive && lastGun === 'reload' && d.gun !== 'reload') sfx.reload();
-    if (d.gun === 'ready' && lastGun === 'arming') sfx.ready();
-    lastGun = d.gun;
+    // Gun sounds: you can't see the screen with the phone on your chest.
+    // reloads only goes up on a real reload — never on a respawn or new-game
+    // reset — so the "clack" plays exactly once per clap.  Nothing gun-related
+    // plays while down, or on the frame you come back / the game starts.
+    const reloaded = lastReloads !== null && d.reloads > lastReloads;
+    if (wasAlive && alive && !justStarted) {
+      if (reloaded) {
+        sfx.reload();
+        if (d.gun === 'ready') setTimeout(() => sfx.ready(), 700);   // frames were slow: arming already over
+      } else if (d.gun === 'ready' && lastGun === 'arming') {
+        sfx.ready();
+      }
+    }
+    lastReloads = d.reloads;
+    lastGun     = d.gun;
 
     // Status line: says exactly why this frame did / didn't fire
     const [msg, cls] = statusText(d);
@@ -392,7 +427,8 @@ function handleMessage(d) {
 
   else if (d.type === 'idle') {
     if (inGame === true) sfx.over();                // playing -> stopped by the host
-    inGame = false;
+    inGame  = false;
+    lastGun = null;                                 // the next game starts with a fresh gun
     $idle.classList.add('show');
   }
 
@@ -444,7 +480,25 @@ function showHit(targetId, killed, targetHp) {
 // small phone speakers reproduce best.  Browsers only allow audio after a tap,
 // so unlockAudio() runs on the Join button and on the first touch.
 let audioCtx = null, master = null, noiseBuf = null;
-let sfxBusyUntil = 0;   // audioCtx time until which our own sounds are playing (mic ignores them)
+
+// The phone's own sounds must not be taken for claps.  The speaker reaches the
+// mic a little late (output + input latency: up to a few hundred ms on some
+// phones), so each SHARP part of our sounds blocks claps until OWN_ECHO_S after
+// it ends: whole noise bursts (gunshot, impact, reload), speech, and the first
+// NOTE_ONSET_S of every note (when a loud note starts, the compressor takes
+// ~2 ms to catch it and that spike looks like a clap — measured by rendering
+// every sound).  The rest of a note is smooth and can't pass the clap
+// sharpness test, so it doesn't block: the reload stays quick right after your
+// own hit sound.  The room's background level isn't learned while anything of
+// ours is playing.
+const OWN_ECHO_S   = 0.3;
+const NOTE_ONSET_S = 0.05;
+let ownSharp = [], ownSoundUntil = 0;   // audioCtx times: [start, end] of sharp parts; end of all sound
+function markOwnSound(start, dur, sharpFor) {
+  ownSoundUntil = Math.max(ownSoundUntil, start + dur + OWN_ECHO_S);
+  ownSharp.push([start, start + sharpFor + OWN_ECHO_S]);
+}
+
 function unlockAudio() {
   // iPhone: without this, the ring/silent switch mutes Web Audio (Safari 16.4+)
   try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
@@ -461,8 +515,11 @@ function unlockAudio() {
       noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);  // 1 s white noise
       const ch = noiseBuf.getChannelData(0);
       for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+      // Sound can stop on its own (iPhone: a call or switching apps "interrupts"
+      // it): bring the "tap to turn on" banner back whenever it does
+      audioCtx.onstatechange = () => checkAudioReady();
     }
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx.state !== 'running') audioCtx.resume();   // 'suspended', or iPhone's 'interrupted'
     attachClapMic();   // the mic stream may have arrived before the audio context
   } catch {}
 }
@@ -473,6 +530,7 @@ function checkAudioReady() {
   const running = audioCtx && audioCtx.state === 'running';
   $tapAudio.classList.toggle('show', !running);
   if (!running) reportMic('waiting for a tap');
+  else if (micAnalyser) reportMic('listening');
 }
 
 // One note gliding f0 -> f1, starting `at` s from now.  hold = fraction of the
@@ -490,7 +548,7 @@ function tone(f0, f1, at, dur, type = 'sine', vol = 0.5, hold = 0) {
   gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   osc.connect(gain).connect(master);
   osc.start(t); osc.stop(t + dur + 0.05);
-  sfxBusyUntil = Math.max(sfxBusyUntil, t + dur + 0.25);
+  markOwnSound(t, dur, NOTE_ONSET_S);   // only the note's start can look like a clap
 }
 
 // Filtered noise burst (gunshots, impacts, clicks); the filter sweeps f0 -> f1
@@ -506,7 +564,7 @@ function noise(at, dur, filterType, f0, f1, vol = 0.6, q = 1) {
   gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   src.connect(filt).connect(gain).connect(master);
   src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.05);
-  sfxBusyUntil = Math.max(sfxBusyUntil, t + dur + 0.25);
+  markOwnSound(t, dur, dur);            // starts at full volume: as sharp as a clap throughout
 }
 
 // A struck bell: a few inharmonic partials ringing out
@@ -528,7 +586,7 @@ function impact(at = 0, big = false) {
 }
 
 function say(text, delayMs, rate = 1, pitch = 1) {
-  if (audioCtx) sfxBusyUntil = Math.max(sfxBusyUntil, audioCtx.currentTime + delayMs / 1000 + 1.5);
+  if (audioCtx) markOwnSound(audioCtx.currentTime + delayMs / 1000, 1.5, 1.5);   // consonants can be sharp
   try {
     const u = new SpeechSynthesisUtterance(text);
     u.volume = 1; u.rate = rate; u.pitch = pitch;
@@ -648,10 +706,16 @@ function listenForClap() {
     $micLbl.textContent = `🎤 ${micMax.toFixed(2)}${micMax >= CLAP_MIN_PEAK ? ' ✓' : ''} / ${CLAP_MIN_PEAK}`;
     micMax = 0;
   }
-  const clap = audioCtx.currentTime >= sfxBusyUntil && peak >= CLAP_MIN_PEAK
+  const t = audioCtx.currentTime;
+  ownSharp = ownSharp.filter(([, end]) => end > t);
+  const ownSharpNow = ownSharp.some(([start]) => t >= start);   // one of our sharp sounds (or its echo)
+  const clap = !ownSharpNow && peak >= CLAP_MIN_PEAK
                && peak >= CLAP_MIN_CREST * rms && peak >= CLAP_OVER_BG * micBg
                && now - lastClapAt > CLAP_GAP_MS;
-  if (!clap) { micBg = micBg * 0.98 + rms * 0.02; return; }   // slowly follow the room's level
+  if (!clap) {
+    if (t >= ownSoundUntil) micBg = micBg * 0.98 + rms * 0.02;   // slowly follow the room's level
+    return;
+  }
   lastClapAt = now;
   $shotLog.textContent = `👏 clap heard (peak ${peak.toFixed(2)})  ` + new Date().toLocaleTimeString();
   // Report every clap with its loudness, even when not reloading: the server

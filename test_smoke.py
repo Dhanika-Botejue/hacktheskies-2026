@@ -185,6 +185,13 @@ try:
     check("aim: finger at camera → tag under tip",
           lambda: pick_aimed_tag([fake_tag(4, 155, 305)], (150, 300), (152, 301))['id'] == 4)
 
+    # Every allowed player ID must have a printable tag, or that player could never be shot
+    from tag_detector import MAX_PLAYER_ID, TAG_FAMILY
+    import pupil_apriltags
+    ncodes = pupil_apriltags.Detector(families=TAG_FAMILY).tag_families[TAG_FAMILY].contents.ncodes
+    check(f"player IDs 1-{MAX_PLAYER_ID} all have a tag in {TAG_FAMILY} ({ncodes} codes)",
+          lambda: MAX_PLAYER_ID == min(99, ncodes - 1))
+
 except Exception as e:
     print(f"  {FAIL}  TagDetector failed to load: {e}")
 
@@ -236,6 +243,7 @@ try:
         check("gun: ready 1 s after the clap", lambda: gun.state(clock[0]) == 'ready')
         frame(True)
         check("gun: clapping while loaded changes nothing", lambda: gun.state(clock[0]) == 'ready')
+        check("gun: reload counter counts real reloads only (1 so far)", lambda: gun.reloads == 1)
 
         # A miss (teammate) leaves the gun loaded: it keeps shooting until a hit
         await g.add_player(3, 'red', ws=None)
@@ -255,6 +263,7 @@ try:
         g.players[2].respawn()
         check("respawn restores HP",     lambda: g.players[2].hp == 3)
         check("respawn: loaded and ready, no clap needed", lambda: g.players[2].gun.state(0) == 'ready')
+        check("respawn isn't a reload (no reload sound)", lambda: g.players[2].gun.reloads == 0)
         g.players[2].alive = False   # back to dead (no extra death) for the checks below
 
         # Already-dead target is rejected
@@ -278,19 +287,41 @@ try:
         check("clap referee: separate claps stay separate",
               lambda: ref.settle(31.3) == [(1, []), (2, [])])
 
-        # Reconnect: P2 re-registers on a new socket; the old socket closing late must not remove it
+        # Reconnect: P9 re-registers on a new socket; the old socket closing late must not remove it
         old_ws, new_ws = object(), object()
         await g.add_player(9, 'blue', ws=old_ws)
         await g.add_player(9, 'blue', ws=new_ws)
         removed = await g.remove_player(9, old_ws)
-        check("stale socket close keeps reconnected player", lambda: not removed and 9 in g.players)
-        await g.remove_player(9, new_ws)
+        check("stale socket close keeps reconnected player", lambda: removed is None and 9 in g.players)
+
+        # Rejoining (Wi-Fi drop, page refresh) is never a free heal: same player, as they were
+        p2_before = g.players[2]
+        p2_again  = await g.add_player(2, 'blue', ws=object())
+        check("rejoin keeps the player as they were (down stays down, deaths kept)",
+              lambda: p2_again is p2_before and not p2_again.alive and p2_again.deaths == 1)
+
+        # A phone drops mid-game: the player is kept (offline) and their kills still count
+        left = await g.remove_player(1, g.players[1].ws)
+        check("mid-game disconnect keeps the player, marked offline",
+              lambda: left == 'offline' and 1 in g.players and g.players[1].to_dict()['connected'] is False)
+        check("an offline player's kills still count for the team", lambda: g.scores()['red_kills'] == 1)
+        p1_back = await g.add_player(1, 'red', ws=object())
+        check("rejoining brings them back online with their kills", lambda: p1_back.connected and p1_back.kills == 1)
+        await g.remove_player(9, new_ws)   # P9's phone drops for good
 
         # Scores (kills-based)
         scores = g.scores()
         check("red has 1 kill",          lambda: scores['red_kills'] == 1)
         check("blue has 1 death",        lambda: scores['blue_deaths'] == 1)
         check("red is winning",          lambda: scores['winner'] == 'red')
+
+        # Between games: a disconnect removes the player; a new game drops offline players
+        await g.stop_game()
+        await g.start_game()
+        check("a new game drops players whose phones left", lambda: 9 not in g.players and 1 in g.players)
+        await g.stop_game()
+        left = await g.remove_player(3, None)
+        check("disconnect between games removes the player", lambda: left == 'removed' and 3 not in g.players)
 
     asyncio.run(test_game_state())
 

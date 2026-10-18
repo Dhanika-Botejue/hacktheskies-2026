@@ -6,10 +6,14 @@ HackTheSkies: finger-gun + AprilTag shooting game.
 WebSocket protocol — phone (/ws/phone)
 ---------------------------------------
   Phone -> Server:  JSON  {"type":"register","player_id":7,"team":"red"}
+                    (player_id 1..MAX_PLAYER_ID, the IDs that have a tag; re-registering
+                    the same ID + team, e.g. after a Wi-Fi drop, rejoins as that player)
   Phone -> Server:  JSON  {"type":"clap","peak":0.83}   (mic heard a clap; sent for
                     every clap, so the server can tell whose it was — see ClapReferee)
+  Phone -> Server:  JSON  {"type":"mic","state":"listening"}   (for the log)
   Phone -> Server:  BINARY  <raw JPEG bytes>  (~10 fps)
-  Server -> Phone:  JSON  frame_result   (after every frame)
+  Server -> Phone:  JSON  registered | {"error": ...}   (reply to register)
+  Server -> Phone:  JSON  frame_result | idle | {"error": ...}   (reply to every frame)
   Server -> Phone:  JSON  shot_event     (push, when this player is hit)
 
 WebSocket protocol — host (/ws/host)
@@ -46,7 +50,7 @@ from aiohttp import web, WSMsgType
 
 from game_state import CLAP_MATCH_S, GameState, MAX_HP
 from hand_detector import HandDetector, INDEX_MCP, INDEX_TIP, ClapTracker, own_palms, shooting_hand
-from tag_detector import TagDetector, pick_aimed_tag
+from tag_detector import MAX_PLAYER_ID, TagDetector, pick_aimed_tag
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,6 +166,12 @@ async def _settle_claps():
             log.info(f'CLAP  by P{clapper} (no reload needed) — not counted for P{", P".join(map(str, others))}')
 
 
+def _owns(player, ws) -> bool:
+    """Does this socket still speak for this player?  Not once another phone has
+    registered as them, nor if their record was replaced (same ID, other team)."""
+    return player is not None and player.ws is ws and game.players.get(player.player_id) is player
+
+
 async def _broadcast_host(data: dict):
     dead = set()
     for ws in list(host_sockets):
@@ -175,7 +185,8 @@ async def _broadcast_host(data: dict):
 # ── WebSocket — Phone ─────────────────────────────────────────────────────────
 
 async def ws_phone(request: web.Request) -> web.WebSocketResponse:
-    ws     = web.WebSocketResponse(max_msg_size=MAX_FRAME_BYTES)
+    # heartbeat: notice a phone that silently dropped off the Wi-Fi (marked offline)
+    ws     = web.WebSocketResponse(max_msg_size=MAX_FRAME_BYTES, heartbeat=10.0)
     await ws.prepare(request)
 
     player = None
@@ -196,26 +207,43 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     data = json.loads(msg.data)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(data, dict):
+                    continue
+                # Another phone has since registered as this player (it rejoined,
+                # or someone re-joined with this ID on the other team): this socket
+                # no longer speaks for them
+                owner = _owns(player, ws)
 
                 if data.get('type') == 'register':
-                    pid  = int(data['player_id'])
-                    team = str(data['team']).lower()
+                    try:
+                        pid  = int(data['player_id'])
+                        team = str(data['team']).lower()
+                    except (KeyError, TypeError, ValueError):
+                        await ws.send_json({'error': 'bad_register'})
+                        continue
                     if team not in ('red', 'blue'):
                         await ws.send_json({'error': 'invalid_team'})
+                        continue
+                    if not 1 <= pid <= MAX_PLAYER_ID:
+                        # no tag exists for it, so nobody could ever shoot this player
+                        await ws.send_json({'error': 'invalid_player_id', 'max_player_id': MAX_PLAYER_ID})
                         continue
                     player = await game.add_player(pid, team, ws)
                     await ws.send_json({'type': 'registered', 'player_id': pid, 'team': team})
                     await _broadcast_host({'type': 'player_joined', 'player': player.to_dict()})
 
+                elif data.get('type') == 'mic' and owner:
+                    log.info(f'MIC   P{player.player_id}: {str(data.get("state"))[:60]}')
+
                 # The phone's microphone heard a clap.  Other phones nearby hear
                 # the same clap; wait CLAP_MATCH_S for their reports, then it
                 # belongs to the loudest (see ClapReferee / _settle_claps).
                 # Camera claps are detected in the frame loop below.
-                elif data.get('type') == 'mic' and player:
-                    log.info(f'MIC   P{player.player_id}: {str(data.get("state"))[:60]}')
-
-                elif data.get('type') == 'clap' and player:
-                    peak = float(data.get('peak', 0.0))
+                elif data.get('type') == 'clap' and owner:
+                    try:
+                        peak = float(data.get('peak', 0.0))
+                    except (TypeError, ValueError):
+                        continue
                     log.info(f'clap heard by P{player.player_id}  peak={peak:.2f}')
                     game.claps.heard(player.player_id, peak, time.monotonic())
                     loop.call_later(CLAP_MATCH_S + 0.02, lambda: asyncio.ensure_future(_settle_claps()))
@@ -226,7 +254,13 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 if player is None:
                     await ws.send_json({'error': 'not_registered'})
                     continue
+                if not _owns(player, ws):
+                    # Another phone took this player over: ignore this one's frames
+                    # (but reply, so its send loop doesn't wait for nothing)
+                    await ws.send_json({'error': 'replaced_by_another_phone'})
+                    continue
                 if not game.game_active:
+                    last_ready_at, last_aim = 0.0, None     # no aim carries into the next game
                     await ws.send_json({'type': 'idle', 'scores': game.scores()})
                     continue
 
@@ -235,6 +269,8 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 det = await loop.run_in_executor(_executor, _process_frame, msg.data, remembered)
 
                 if 'error' in det:
+                    # Reply anyway: the phone waits for one reply per frame
+                    await ws.send_json({'error': det['error']})
                     continue
 
                 now  = time.monotonic()
@@ -247,7 +283,9 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 # One-handed only: your second hand in view cancels any pose/aim
                 # in progress, so the two hands can't combine into a shot.
                 two_hands = len(det['own_palms']) >= 2
-                if two_hands:
+                # Being down cancels them too: an aim from before you died must
+                # not fire the moment you respawn
+                if two_hands or not player.alive:
                     last_ready_at, last_aim = 0.0, None
                 if det['ready']:
                     last_ready_at = now
@@ -257,7 +295,9 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 aim_ready  = last_aim is not None and now - last_aim[1] <= TRIGGER_WINDOW_S
                 target_id  = last_aim[0] if aim_ready else None
 
-                clapped = claps.update(det['own_palms'], now)
+                # Camera clap (backup to the mic).  No reloading while down, same
+                # as a mic clap (_settle_claps).
+                clapped = claps.update(det['own_palms'], now) and player.alive
                 reloading = player.gun.state(now) == 'reload'
                 player.gun.update(clapped, now)
                 if clapped and reloading:
@@ -322,6 +362,7 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     'tags_seen':     det['tags_seen'],
                     'status':        status,
                     'gun':           gun,
+                    'reloads':       player.gun.reloads,   # +1 = reloaded: phone plays the reload sound
                     'arming_left':   round(player.gun.arming_left(now), 1),
                     'clapped':       clapped,
                     'fire_ready':    fire_ready,
@@ -347,9 +388,12 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
     except Exception as exc:
         log.exception(f'Phone WS error: {exc}')
     finally:
-        if player and await game.remove_player(player.player_id, ws):
-            await _broadcast_host({'type': 'player_left', 'player_id': player.player_id})
-            log.info(f'Player {player.player_id} disconnected')
+        left = await game.remove_player(player.player_id, ws) if player else None
+        if left:
+            # 'offline': mid-game, kept (kills still count; the phone can rejoin)
+            await _broadcast_host({'type': 'player_left', 'player_id': player.player_id,
+                                   'kept': left == 'offline'})
+            log.info(f'Player {player.player_id} disconnected ({left})')
 
     return ws
 

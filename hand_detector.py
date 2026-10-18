@@ -16,13 +16,11 @@ Download once with:
     )
     "
 
-Finger-gun definition  ("thumbs up with the index finger pointing out")
+Finger-gun definition  (see ready_to_fire)
 ---------------------
-  OK  Index finger extended
-  OK  Thumb raised away from the fist
-  NO  Middle finger curled
-  NO  Ring finger curled
-  NO  Pinky curled
+  Required:  index finger extended, and middle OR ring finger curled
+  Shown on the phone but not required: thumb raised, pinky curled
+  (they read noisily when the hand is edge-on to the camera)
 
 All checks use MediaPipe's 3D world landmarks (metres, hand-centred), so they
 work regardless of which way the hand is pointing — sideways, at the camera,

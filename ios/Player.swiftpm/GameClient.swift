@@ -107,14 +107,14 @@ final class GameClient: NSObject, CLLocationManagerDelegate {
         compass = newHeading.headingAccuracy >= 0 ? newHeading.magneticHeading : nil
     }
 
-    /// Heading (degrees clockwise) the top of the phone points, from a CoreMotion attitude whose
-    /// reference frame has z up. Same definition as Tracker's yaw: top edge + back camera, so it
-    /// works upright, tilted and flat.
+    /// Heading (degrees clockwise) the wearer faces, from a CoreMotion attitude whose reference
+    /// frame has z up. Same definition as Tracker's yaw (facingDirection): the back camera while
+    /// upright in portrait or landscape, the top edge when flat.
     static func cameraHeading(_ q: CMQuaternion) -> Double {
         let (x, y, z, w) = (q.x, q.y, q.z, q.w)
-        // Device +y (top edge) plus device -z (out of the back), rotated into the reference frame.
-        let hx = 2 * (x * y - w * z) - 2 * (x * z + w * y)
-        let hy = 1 - 2 * (x * x + z * z) - 2 * (y * z - w * x)
+        // Device -z (out of the back) and +y (top edge), rotated into the reference frame.
+        let (hx, hy) = facingDirection(back: (-2 * (x * z + w * y), -2 * (y * z - w * x)),
+                                       top: (2 * (x * y - w * z), 1 - 2 * (x * x + z * z)))
         // Reference frame: x "north", y "west" (z up), so east = -y.
         return (atan2(-hy, hx) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
     }

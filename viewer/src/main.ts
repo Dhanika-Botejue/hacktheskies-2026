@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import type { MapInfo } from "../server/maps.ts";
-import { align2D, placePoints, wallPoints } from "./align.ts";
+import { align2D, wallPoints } from "./align.ts";
 import { autoCalibrate, currentUp, nextUpAxis, nudgeFloor, rotateY90, sampleCenters } from "./calibrate.ts";
 import { CombatLink, TEAM_COLORS } from "./combat.ts";
 import { SpectatorControls } from "./controls.ts";
@@ -293,8 +293,10 @@ document.querySelectorAll<HTMLButtonElement>("[data-adjust]").forEach((btn) => {
 
 let merging = false;
 
-/** One map made of the ticked ones: each keeps its own floor calibration, and the viewer lines
- * them up from above (best guess; fix it in Align parts). Merged maps can be merged again. */
+/** One map made of the ticked ones. Each scan stays exactly as scanned (its own floor calibration;
+ * a merged input keeps its parts' arrangement), but scans don't record where they are relative
+ * to each other, so nothing is snapped together: they're laid side by side, 2 m apart, for the
+ * host to drag into place in Align parts. Merged maps can be merged again. */
 async function mergeMaps(maps: MapInfo[]) {
   const name = prompt("Name the merged map", maps.map((m) => m.name).join(" + ").slice(0, 60));
   if (name === null) return;
@@ -308,23 +310,24 @@ async function mergeMaps(maps: MapInfo[]) {
     setStatus(`Merging ${maps.length} maps: loading ${pieces.length} scans…`);
     const meshes = pieces.map((p) => new SplatMesh({ url: p.url }));
     await Promise.all(meshes.map((m) => m.initialized));
-    setStatus(`Merging ${maps.length} maps: lining them up…`);
-    await new Promise((r) => setTimeout(r, 30)); // let the message show
     // Each piece into its own map's floor frame: map transform × part placement.
     const placed = pieces.map((p, i) => {
       const t = p.map.transform ?? autoCalibrate(sampleCenters([{ mesh: meshes[i], matrix: p.raw }]), upFor(p.map));
       return new THREE.Matrix4().fromArray(t).multiply(p.raw);
     });
-    // Line each map's walls up with the maps before it.
-    let start = groups[0].length;
-    let fixed = concat(groups[0].map((_, i) => wallPoints(meshes[i], placed[i])));
-    for (const group of groups.slice(1)) {
+    // Side by side along x, each map's footprint 2 m right of the previous one's.
+    let start = 0;
+    let right: number | null = null;
+    for (const group of groups) {
       const idx = group.map((_, k) => start + k);
-      const moving = concat(idx.map((i) => wallPoints(meshes[i], placed[i])));
-      if (fixed.length && moving.length) {
-        const { matrix } = align2D(fixed, moving);
-        for (const i of idx) placed[i].premultiply(matrix);
-        fixed = concat([fixed, placePoints(moving, matrix)]);
+      const xs = concat(idx.map((i) => sampleCenters([{ mesh: meshes[i], matrix: placed[i] }]))).filter((_, k) => k % 3 === 0).sort();
+      const [minX, maxX] = [xs[Math.floor(xs.length * 0.02)] ?? 0, xs[Math.floor(xs.length * 0.98)] ?? 0];
+      if (right !== null) {
+        const shift = new THREE.Matrix4().makeTranslation(right + 2 - minX, 0, 0);
+        for (const i of idx) placed[i].premultiply(shift);
+        right += 2 + (maxX - minX);
+      } else {
+        right = maxX;
       }
       start += group.length;
     }
@@ -335,7 +338,7 @@ async function mergeMaps(maps: MapInfo[]) {
       body: JSON.stringify({ name, parts: pieces.map((p, i) => ({ id: p.id, splatFile: p.splatFile, transform: placed[i].toArray() })) }),
     });
     if (!res.ok) throw new Error((await res.json()).error ?? `merge failed (${res.status})`);
-    feed.push(`Merged "${name}": check how the parts line up in Align parts`, "#ffd34d");
+    feed.push(`Merged "${name}": drag each part into place in Align parts`, "#ffd34d");
   } catch (err) {
     console.error(err);
     alert(`Couldn't merge: ${(err as Error).message ?? err}`);

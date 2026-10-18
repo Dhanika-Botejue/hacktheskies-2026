@@ -66,7 +66,7 @@ final class GameClient: NSObject, CLLocationManagerDelegate {
     func cameraPose(x: Double, z: Double, yaw: Double, tracking: Bool, epoch: Int, time: Double) {
         cameraRunning = true
         detector.addHeading(yaw)
-        guard time - lastPoseSent >= 1.0 / 15 else { return }
+        guard time - lastPoseSent >= 1.0 / 30 else { return }
         lastPoseSent = time
         link.send(["t": "pose", "x": x, "z": z, "yaw": yaw, "tracking": tracking, "epoch": epoch])
     }
@@ -92,7 +92,7 @@ final class GameClient: NSObject, CLLocationManagerDelegate {
             location.startUpdatingHeading()
         }
         headingTimer?.invalidate()
-        headingTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        headingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
             var msg: [String: Any] = ["t": "heading"]
             if let gyro { msg["gyro"] = gyro }
@@ -105,18 +105,14 @@ final class GameClient: NSObject, CLLocationManagerDelegate {
         compass = newHeading.headingAccuracy >= 0 ? newHeading.magneticHeading : nil
     }
 
-    /// Heading (degrees clockwise) of the back camera, from a CoreMotion attitude whose
-    /// reference frame has z up. Falls back to the top edge when the phone lies flat.
+    /// Heading (degrees clockwise) the top of the phone points, from a CoreMotion attitude whose
+    /// reference frame has z up. Same definition as Tracker's yaw: top edge + back camera, so it
+    /// works upright, tilted and flat.
     static func cameraHeading(_ q: CMQuaternion) -> Double {
         let (x, y, z, w) = (q.x, q.y, q.z, q.w)
-        // Device -z (out of the back) rotated into the reference frame.
-        var hx = -2 * (x * z + w * y)
-        var hy = -2 * (y * z - w * x)
-        if (hx * hx + hy * hy).squareRoot() < 0.3 {
-            // Device +y (top edge)
-            hx = 2 * (x * y - w * z)
-            hy = 1 - 2 * (x * x + z * z)
-        }
+        // Device +y (top edge) plus device -z (out of the back), rotated into the reference frame.
+        let hx = 2 * (x * y - w * z) - 2 * (x * z + w * y)
+        let hy = 1 - 2 * (x * x + z * z) - 2 * (y * z - w * x)
         // Reference frame: x "north", y "west" (z up), so east = -y.
         return (atan2(-hy, hx) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
     }

@@ -21,7 +21,7 @@ MAP_FILE = DATA / "map.json"
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 
 DEFAULT_MAP = {"width": 40.0, "height": 30.0, "image": None, "walls": []}
-BROADCAST_HZ = 10
+BROADCAST_HZ = 20
 HOST_PARTICLES = 120
 SEND_TIMEOUT_S = 1.0
 

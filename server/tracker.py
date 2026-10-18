@@ -42,9 +42,9 @@ class TrackerConfig:
     scale_min: float = 0.6
     scale_max: float = 1.6
     # Camera
-    ar_pos_std: float = 0.004  # m per update
+    ar_pos_std: float = 0.003  # m per update (phones send 30 a second)
     ar_rel_std: float = 0.03  # fraction of distance moved
-    ar_bias_walk_std: float = np.radians(0.1)  # per update
+    ar_bias_walk_std: float = np.radians(0.07)  # per update
     # Compass
     compass_std: float = np.radians(25)
     compass_floor: float = 0.5  # keeps a wild reading from wiping out particles

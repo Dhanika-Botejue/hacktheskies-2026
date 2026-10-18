@@ -87,7 +87,7 @@ Do this before placing players. Flip and Rotate reset player positions and walls
 ## 3. Join and place players
 
 1. Open **HTS Player**, enter a name and the game server address from `run.py` (e.g. `10.110.0.189:8443`), and tap **Join**.
-2. Hold the phone upright with the back camera facing forward, as if strapped to your chest. Stand still at a spot that's easy to recognise in the scan, like a corner or a doorway.
+2. Hold the phone with its top pointing the way you face, upright (back camera forward, as if strapped to your chest), tilted or flat. Stand still at a spot that's easy to recognise in the scan, like a corner or a doorway.
 3. In the viewer's **Players** panel, click **Place**. On the top-down map, click where the player stands, then click the direction they face.
    - Or: walk to their spot in the 3D view, look the way they face, and press **P**.
 4. The phone shows **In game · camera**, and the player moves live on the laptop.

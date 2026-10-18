@@ -70,10 +70,12 @@ final class Tracker: NSObject, ARSessionDelegate {
             }
         }
 
-        // World space: x right, y up, -z forward. The back camera looks along the camera's -z axis.
+        // World space: x right, y up, -z forward. Camera axes are in landscape: -z out of the back,
+        // -x toward the top edge. Facing = where the top of the phone points, tilted or flat: the
+        // sum of the top edge (points forward when flat) and the back camera (forward when upright).
         let t = camera.transform
-        let fx = Double(-t.columns.2.x), fz = Double(-t.columns.2.z)
-        if hypot(fx, fz) > 0.3 {  // ignore heading while the phone is held flat
+        let fx = Double(-t.columns.0.x - t.columns.2.x), fz = Double(-t.columns.0.z - t.columns.2.z)
+        if hypot(fx, fz) > 0.3 {  // keep the last heading if the phone points straight up or down
             yaw = (atan2(fx, -fz) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
         }
         let x = Double(t.columns.3.x), z = Double(t.columns.3.z)

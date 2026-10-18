@@ -1,10 +1,11 @@
 // Live players in the 3D map: an avatar per placed player with a facing visor, an uncertainty
 // ring on the floor, a faint x-ray copy that shows through walls, and a floating name tag.
-// Positions arrive ~10 times a second; avatars glide between updates.
+// Positions arrive ~20 times a second; avatars glide between updates.
 import * as THREE from "three";
 import { type GameLink, type GamePlayer, colorFor, headingToYaw } from "./game.ts";
 
-const SMOOTHING = 10; // 1/s
+const SMOOTHING = 15; // 1/s
+const TURN_SMOOTHING = 30; // 1/s; facing follows the phone closely, position glides more
 const BODY_HEIGHT = 1.45;
 const HEAD_Y = 1.62;
 export const EYE_HEIGHT = 1.6;
@@ -100,7 +101,7 @@ class Avatar {
     this.pose.x += (this.target.x - this.pose.x) * k;
     this.pose.z += (this.target.z - this.pose.z) * k;
     const dYaw = Math.atan2(Math.sin(this.target.yaw - this.pose.yaw), Math.cos(this.target.yaw - this.pose.yaw));
-    this.pose.yaw += dYaw * k;
+    this.pose.yaw += dYaw * (1 - Math.exp(-TURN_SMOOTHING * dt));
     this.group.position.set(this.pose.x, 0, this.pose.z);
     this.group.rotation.y = this.pose.yaw;
     this.ring.position.set(this.pose.x, 0.02, this.pose.z);

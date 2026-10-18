@@ -29,7 +29,8 @@ let package = Package(
                 .portrait
             ],
             capabilities: [
-                .camera(purposeString: "The camera tracks where you walk."),
+                .camera(purposeString: "The camera tracks where you walk and sees your finger gun and other players' tags."),
+                .microphone(purposeString: "Hears the clap that reloads your finger gun."),
                 .localNetwork(purposeString: "Connects to the game server on the laptop.", bonjourServiceTypes: [])
             ]
         )

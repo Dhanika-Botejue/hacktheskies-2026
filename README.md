@@ -63,6 +63,21 @@ player list · **−/=** minimap zoom · Esc for the menus.
 
 `GAME_SERVER` overrides where the viewer finds the game server (default `https://127.0.0.1:8443`).
 
+## Shooting (`combat/`)
+
+Finger guns and chest tags: each player wears a printed AprilTag (its number = their player
+number) and a phone on their chest. The **HTS Player** app sends the same camera frames it tracks
+with to the shooting server (`combat/server.py`, started by `run.py` on ports 8765/8766), which
+finds a one-handed finger gun pointed at a tag and decides hits: 3 hits down a player, clap to
+reload. How it works and how to tune it: [combat/README.md](combat/README.md).
+
+The viewer joins the two servers by tag number (proxied at `/game/` and `/combat/`): avatars in
+team colours with hearts, tracers from shooter to target, a kill feed, the score, and the
+**Match** panel to start and end a match. **Key positions** (+ Add or **K**, then click the
+top-down map) are stored with the game map and show which team is standing in them; scoring for
+holding them is still to come. `COMBAT_SERVER` overrides where the viewer finds the shooting
+server (default `http://127.0.0.1:8765`).
+
 ## Testing without a phone
 
 ```sh

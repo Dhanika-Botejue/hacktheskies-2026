@@ -287,6 +287,33 @@ body[data-mode="overview"] #minimap-wrap { display: none; }
 
 #hud-game { color: var(--muted); }
 
+/* ---- Match, key positions, hit points ---- */
+
+#match-panel, #points-panel { flex: none; }
+#match-panel header { margin-bottom: 4px; }
+#match-clock { font: 700 13px ui-monospace, monospace; color: #ffd34d; }
+#match-score { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+#match-score:empty { display: none; }
+#match-note { margin: 8px 0 0; font-size: 12px; }
+button:disabled { opacity: 0.4; cursor: default; }
+button.active, .btn.active { border-color: #ffd34d; color: #ffd34d; }
+.hp { color: #ff6b81; letter-spacing: 1px; }
+.warn { color: var(--warn); }
+
+#point-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+#point-list li { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+#point-list li.empty { display: block; }
+#point-list .name { font-weight: 700; padding: 1px 7px; }
+#point-list .holder { color: var(--muted); flex: 1; }
+#point-list .row { gap: 3px; align-items: center; flex-wrap: nowrap; }
+#point-list .row button { padding: 1px 6px; font-size: 11px; }
+#point-list .radius { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 40px; text-align: center; }
+#point-list .delete { color: var(--muted); }
+
+.tag.down b { text-decoration: line-through; }
+.tag.down span { color: #ff6b81; opacity: 1; }
+.tag.point b { font-size: 15px; }
+
 @media (max-width: 720px) {
   #left { width: auto; right: 12px; max-height: 45%; }
   #minimap-wrap { width: 140px; height: 140px; }

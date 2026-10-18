@@ -1,14 +1,21 @@
 // Live players in the 3D map: an avatar per placed player with a facing visor, an uncertainty
 // ring on the floor, a faint x-ray copy that shows through walls, and a floating name tag.
-// Positions arrive ~20 times a second; avatars glide between updates.
+// Positions arrive ~20 times a second; avatars glide between updates. Players on a team wear
+// its colour; their shooting-server state (hit points, downed) shows on the avatar and its tag.
 import * as THREE from "three";
+import { type CombatLink, type Fighter, TEAM_COLORS, hearts } from "./combat.ts";
 import { type GameLink, type GamePlayer, colorFor, headingToYaw } from "./game.ts";
 
 const SMOOTHING = 15; // 1/s
 const TURN_SMOOTHING = 30; // 1/s; facing follows the phone closely, position glides more
+const FLASH_DECAY = 4; // 1/s, how fast the white hit flash fades
 const BODY_HEIGHT = 1.45;
 const HEAD_Y = 1.62;
 export const EYE_HEIGHT = 1.6;
+export const CHEST_Y = 1.25;
+
+/** One colour per player everywhere: their team's, or their own until they pick a team. */
+export const playerColor = (p: Pick<GamePlayer, "id" | "team">) => (p.team ? TEAM_COLORS[p.team] : colorFor(p.id));
 
 const bodyGeom = new THREE.CapsuleGeometry(0.22, BODY_HEIGHT - 0.44, 4, 12).translate(0, BODY_HEIGHT / 2, 0);
 const headGeom = new THREE.SphereGeometry(0.14, 16, 12).translate(0, HEAD_Y, 0);
@@ -27,39 +34,52 @@ class Avatar {
   readonly label = document.createElement("div");
   readonly nameEl = document.createElement("b");
   readonly metaEl = document.createElement("span");
+  private body = new THREE.Group(); // tips over when the player is downed
   private ghost = new THREE.Group();
   private ring: THREE.Mesh;
   private solid: THREE.MeshLambertMaterial;
   private ghostMat: THREE.MeshBasicMaterial;
   private ringMat: THREE.MeshBasicMaterial;
+  private color = "";
+  private flash = 0;
   pose: Pose | null = null;
   private target: Pose | null = null;
   private spread = 0;
   player!: GamePlayer;
+  fighter: Fighter | null = null;
 
   constructor(
     readonly id: string,
     labels: HTMLElement,
   ) {
-    const color = new THREE.Color(colorFor(id));
-    this.solid = new THREE.MeshLambertMaterial({ color, transparent: true });
-    this.ghostMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.22, depthTest: false, depthWrite: false,
-    });
-    this.ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+    this.solid = new THREE.MeshLambertMaterial({ transparent: true });
+    this.ghostMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.22, depthTest: false, depthWrite: false });
+    this.ringMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.55, side: THREE.DoubleSide });
     const visorMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    this.group.add(new THREE.Mesh(bodyGeom, this.solid), new THREE.Mesh(headGeom, this.solid), new THREE.Mesh(visorGeom, visorMat));
+    this.body.add(new THREE.Mesh(bodyGeom, this.solid), new THREE.Mesh(headGeom, this.solid), new THREE.Mesh(visorGeom, visorMat));
     this.ghost.add(new THREE.Mesh(bodyGeom, this.ghostMat), new THREE.Mesh(headGeom, this.ghostMat));
     this.ghost.children.forEach((m) => (m.renderOrder = 999));
-    this.group.add(this.ghost);
+    this.body.add(this.ghost);
+    this.group.add(this.body);
     this.ring = new THREE.Mesh(ringGeom, this.ringMat);
     this.ring.position.y = 0.02;
     this.ring.renderOrder = 998;
 
     this.label.className = "tag";
-    this.label.style.setProperty("--c", colorFor(id));
     this.label.append(this.nameEl, this.metaEl);
     labels.appendChild(this.label);
+  }
+
+  private setColor(color: string) {
+    if (color === this.color) return;
+    this.color = color;
+    for (const m of [this.solid, this.ghostMat, this.ringMat]) m.color.set(color);
+    this.label.style.setProperty("--c", color);
+  }
+
+  /** Flash white: this player was just hit. */
+  hit() {
+    this.flash = 1;
   }
 
   addTo(scene: THREE.Object3D) {
@@ -75,8 +95,10 @@ class Avatar {
     this.ringMat.dispose();
   }
 
-  update(p: GamePlayer, game: GameLink) {
+  update(p: GamePlayer, game: GameLink, fighter: Fighter | null) {
     this.player = p;
+    this.fighter = fighter;
+    this.setColor(playerColor(p));
     if (!p.calibrated || p.x == null || p.y == null) {
       this.target = null;
       this.pose = null;
@@ -86,16 +108,25 @@ class Avatar {
     this.target = { x: w.x, z: w.z, yaw: headingToYaw(p.heading ?? 0) };
     this.pose ??= { ...this.target };
     this.spread = p.spread ?? 0;
-    const alpha = p.connected ? 1 : 0.35;
+    const down = fighter?.alive === false;
+    const alpha = p.connected && !down ? 1 : 0.35;
     this.solid.opacity = alpha;
     this.ghostMat.opacity = 0.22 * alpha;
+    // Downed: lying on the floor, face down.
+    this.body.rotation.x = down ? -Math.PI / 2 : 0;
+    this.body.position.y = down ? 0.22 : 0;
     this.label.classList.toggle("offline", !p.connected);
+    this.label.classList.toggle("down", down);
   }
 
   animate(dt: number, hidden: boolean) {
     const visible = !!(this.pose && this.target) && !hidden;
     this.group.visible = visible;
     this.ring.visible = !!this.pose;
+    if (this.flash > 0) {
+      this.flash = Math.max(0, this.flash - FLASH_DECAY * dt);
+      this.solid.emissive.setScalar(this.flash);
+    }
     if (!this.pose || !this.target) return;
     const k = 1 - Math.exp(-SMOOTHING * dt);
     this.pose.x += (this.target.x - this.pose.x) * k;
@@ -119,6 +150,7 @@ export class PlayerLayer {
 
   constructor(
     private game: GameLink,
+    private combat: CombatLink,
     private labels: HTMLElement,
   ) {}
 
@@ -132,7 +164,7 @@ export class PlayerLayer {
         a.addTo(this.group);
         this.avatars.set(p.id, a);
       }
-      a.update(p, this.game);
+      a.update(p, this.game, this.combat.fighter(p.tag));
     }
     for (const [id, a] of this.avatars) {
       if (!seen.has(id)) {
@@ -148,7 +180,15 @@ export class PlayerLayer {
   }
 
   poses() {
-    return [...this.avatars.values()].filter((a) => a.pose).map((a) => ({ player: a.player, pose: a.pose! }));
+    return [...this.avatars.values()]
+      .filter((a) => a.pose)
+      .map((a) => ({ player: a.player, pose: a.pose!, fighter: a.fighter }));
+  }
+
+  /** The player wearing chest tag `tag`, with their pose if placed. */
+  byTag(tag: number) {
+    for (const a of this.avatars.values()) if (a.player.tag === tag) return { player: a.player, pose: a.pose, avatar: a };
+    return null;
   }
 
   /** Move avatars and pin each name tag above its head on screen. */
@@ -166,7 +206,9 @@ export class PlayerLayer {
       }
       const dist = Math.hypot(a.pose.x - camPos.x, a.pose.z - camPos.z);
       const p = a.player;
-      const meta = `${dist.toFixed(1)} m${(p.spread ?? 0) > 1.5 ? ` · ±${p.spread!.toFixed(1)}` : ""}`;
+      const f = a.fighter;
+      const health = !f ? "" : f.alive ? `${hearts(f)} · ` : `DOWN ${Math.ceil(f.seconds_to_respawn)}s · `;
+      const meta = `${health}${dist.toFixed(1)} m${(p.spread ?? 0) > 1.5 ? ` · ±${p.spread!.toFixed(1)}` : ""}`;
       if (a.nameEl.textContent !== p.name) a.nameEl.textContent = p.name;
       if (a.metaEl.textContent !== meta) a.metaEl.textContent = meta;
       a.label.classList.toggle("selected", a.id === this.selectedId);

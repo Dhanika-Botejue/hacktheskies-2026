@@ -44,14 +44,16 @@ final class GameClient: NSObject, CLLocationManagerDelegate {
         location.headingOrientation = .portrait
     }
 
-    func connect(server: String, name: String) {
+    /// tag: the number on your chest tag (1–34), which the shooting server knows you by.
+    func connect(server: String, name: String, tag: Int, team: String) {
         let address = server.trimmingCharacters(in: .whitespaces)
         guard let url = URL(string: address.contains("://") ? address : "wss://\(address)/ws") else {
             error = "Bad server address"
             return
         }
         error = nil
-        link.connect(url: url, hello: ["role": "player", "id": playerId, "name": name, "platform": "ios"])
+        link.connect(url: url, hello: ["role": "player", "id": playerId, "name": name, "platform": "ios",
+                                       "tag": tag, "team": team])
         startSensors()
     }
 
@@ -159,6 +161,11 @@ final class WebSocketLink: NSObject, URLSessionDelegate {
 
     func send(_ msg: [String: Any]) {
         if connected { write(msg) }
+    }
+
+    /// Binary message (a camera frame for the shooting server).
+    func sendData(_ data: Data) {
+        if connected { task?.send(.data(data)) { _ in } }
     }
 
     private func open() {

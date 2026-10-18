@@ -1,14 +1,20 @@
 // Spectator viewer: shows the active map as a Gaussian splat, walked through first-person like a
-// shooter map, with the players' live positions from the game server.
+// shooter map, with the players' live positions from the game server, their hit points and shots
+// from the shooting server, and the key positions teams fight over.
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import type { MapInfo } from "../server/maps.ts";
 import { autoCalibrate, currentUp, nudgeFloor, rotateY90, sampleCenters } from "./calibrate.ts";
+import { CombatLink, TEAM_COLORS } from "./combat.ts";
 import { SpectatorControls } from "./controls.ts";
-import { GameLink, isLinked, publishGameMap, yawToHeading } from "./game.ts";
-import { Feed, Minimap, drawCompass, renderPlayersPanel, renderScoreboard } from "./hud.ts";
+import { GameLink, type KeyPoint, isLinked, mapOrigin, publishGameMap, yawToHeading } from "./game.ts";
+import {
+  Feed, Minimap, drawCompass, renderMatchPanel, renderPlayersPanel, renderPointsPanel, renderScoreboard,
+} from "./hud.ts";
 import { MarkerLayer } from "./markers.ts";
-import { PlayerLayer } from "./players.ts";
+import { PlayerLayer, playerColor } from "./players.ts";
+import { KeyPointLayer } from "./points.ts";
+import { TracerLayer } from "./tracers.ts";
 import {
   type MapsState, renderMapList, setHud, setStatus, setupConnectPanel, setupUploads, subscribeMaps,
 } from "./ui.ts";
@@ -27,9 +33,15 @@ const controls = new SpectatorControls(canvas);
 const markers = new MarkerLayer();
 scene.add(markers.group);
 
+const labels = document.querySelector<HTMLElement>("#labels")!;
 const game = new GameLink();
-const players = new PlayerLayer(game, document.querySelector<HTMLElement>("#labels")!);
+const combat = new CombatLink();
+const players = new PlayerLayer(game, combat, labels);
 scene.add(players.group);
+const keyPoints = new KeyPointLayer(game, labels);
+scene.add(keyPoints.group);
+const tracers = new TracerLayer();
+scene.add(tracers.group);
 const minimap = new Minimap(game);
 const feed = new Feed();
 
@@ -265,19 +277,79 @@ function updatePlacingHint() {
   placeMarker.visible = !!placing?.at;
   if (placing?.at) placeMarker.position.set(placing.at.x, 0.03, placing.at.z);
   const hint = document.querySelector<HTMLElement>("#place-hint")!;
-  hint.hidden = !placing;
+  hint.hidden = !placing && !addingPoint;
   if (placing) {
     hint.textContent = placing.at
       ? `Now click the direction ${nameOf(placing.id)} is facing. Esc cancels.`
       : `Click where ${nameOf(placing.id)} is standing. Esc cancels. (Or walk there in first person and press P.)`;
+  } else if (addingPoint) {
+    hint.textContent = `Click the map where key position ${nextPointName()} goes. Esc cancels.`;
   }
 }
+
+// ---- Key positions: the host marks them on the top-down map ---------------------------------
+
+const POINT_RADIUS = { min: 0.5, max: 10, start: 2.5 };
+let addingPoint = false;
+
+function nextPointName() {
+  const used = new Set(keyPoints.points.map((p) => p.name));
+  return [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].find((c) => !used.has(c)) ?? `P${keyPoints.points.length + 1}`;
+}
+
+function setPoints(points: KeyPoint[]) {
+  if (!game.map) return;
+  game.map = { ...game.map, points }; // show it now; the server's map message confirms it
+  game.setPoints(points);
+  keyPoints.update(players.poses());
+}
+
+function startAddingPoint() {
+  if (!game.connected) return feed.push("Game server offline: start run.py first", "#ff5c6c");
+  placing = null;
+  addingPoint = true;
+  controls.setMode("overview");
+  updatePlacingHint();
+}
+
+function stopAddingPoint() {
+  addingPoint = false;
+  updatePlacingHint();
+}
+
+const pointActions = {
+  rename: (id: string) => {
+    const p = keyPoints.points.find((q) => q.id === id);
+    const name = p && prompt("Name this key position", p.name)?.trim();
+    if (p && name) setPoints(keyPoints.points.map((q) => (q.id === id ? { ...q, name: name.slice(0, 24) } : q)));
+  },
+  resize: (id: string, delta: number) => {
+    const clamp = (r: number) => Math.min(POINT_RADIUS.max, Math.max(POINT_RADIUS.min, r));
+    setPoints(keyPoints.points.map((q) => (q.id === id ? { ...q, r: clamp(q.r + delta) } : q)));
+  },
+  remove: (id: string) => setPoints(keyPoints.points.filter((q) => q.id !== id)),
+};
+
+document.querySelector<HTMLButtonElement>("#point-add")!.onclick = () =>
+  addingPoint ? stopAddingPoint() : startAddingPoint();
 
 let downAt: { x: number; y: number } | null = null;
 canvas.addEventListener("pointerdown", (e) => (downAt = { x: e.clientX, y: e.clientY }));
 canvas.addEventListener("click", (e) => {
   const dragged = downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4;
-  if (!placing || controls.mode !== "overview" || dragged) return;
+  if (controls.mode !== "overview" || dragged) return;
+  if (addingPoint) {
+    const at = controls.floorAt(e.clientX, e.clientY);
+    if (!at) return;
+    const o = mapOrigin(game.map);
+    const name = nextPointName();
+    const id = `kp-${Date.now().toString(36)}`;
+    setPoints([...keyPoints.points, { id, name, x: at.x - o.x, y: at.z - o.z, r: POINT_RADIUS.start }]);
+    feed.push(`Key position ${name} added`, "#ffd34d");
+    stopAddingPoint();
+    return;
+  }
+  if (!placing) return;
   const p = controls.floorAt(e.clientX, e.clientY);
   if (!p) return;
   if (!placing.at) {
@@ -302,10 +374,11 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     document.querySelector<HTMLElement>("#scoreboard")!.hidden = false;
   }
-  if (e.code === "Escape" && placing) {
+  if (e.code === "Escape" && (placing || addingPoint)) {
     placing = null;
-    updatePlacingHint();
+    stopAddingPoint();
   }
+  if (e.code === "KeyK") addingPoint ? stopAddingPoint() : startAddingPoint();
   const n = Number(e.key);
   if (n >= 1 && n <= 9 && game.players[n - 1]) spectate(game.players[n - 1].id);
   if (e.code === "KeyP") {
@@ -326,9 +399,9 @@ window.addEventListener("blur", () => (document.querySelector<HTMLElement>("#sco
 
 controls.onModeChange = (mode) => {
   if (mode !== "follow") followId = null;
-  if (mode !== "overview" && placing) {
+  if (mode !== "overview" && (placing || addingPoint)) {
     placing = null;
-    updatePlacingHint();
+    stopAddingPoint();
   }
   document.body.dataset.mode = mode;
 };
@@ -345,19 +418,63 @@ const panelActions = {
   },
 };
 
+function refreshPlayers() {
+  players.set(game.players);
+  renderScoreboard(game.players, combat);
+  renderPlayersPanel(game.players, combat, selectedId, game.connected, panelActions);
+  renderMatchPanel(combat, game.players);
+}
+
 game.onStatus = (up) => {
   feed.push(up ? "Connected to the game server" : "Game server offline", up ? "#3ccf8e" : "#ff5c6c");
-  renderPlayersPanel(game.players, selectedId, up, panelActions);
+  refreshPlayers();
 };
-game.onMap = () => syncGameMap();
+game.onMap = () => {
+  syncGameMap();
+  keyPoints.update(players.poses());
+};
 game.onPlayers = (list) => {
-  players.set(list);
   feed.diff(list);
-  renderScoreboard(list);
-  renderPlayersPanel(list, selectedId, game.connected, panelActions);
+  refreshPlayers();
   if (followId && !list.some((p) => p.id === followId && p.calibrated)) controls.setMode("walk");
 };
-renderPlayersPanel([], null, false, panelActions);
+
+// ---- Shooting: hit points, shots and the match ------------------------------------------------
+
+const tagName = (tag: number) => players.byTag(tag)?.player.name ?? `P${tag}`;
+
+combat.onStatus = (up) => {
+  feed.push(up ? "Connected to the shooting server" : "Shooting server offline", up ? "#3ccf8e" : "#ff5c6c");
+  refreshPlayers();
+};
+combat.onChange = refreshPlayers;
+combat.onShot = (shot) => {
+  const shooter = players.byTag(shot.shooter_id);
+  const target = players.byTag(shot.target_id);
+  const team = combat.fighter(shot.shooter_id)?.team;
+  const color = shooter ? playerColor(shooter.player) : team ? TEAM_COLORS[team] : "#fff";
+  // The shot only shows in the map if position tracking knows where both players are.
+  if (shooter?.pose && target?.pose) tracers.add(shooter.pose, target.pose, color, shot.killed);
+  target?.avatar.hit();
+  feed.push(
+    shot.killed
+      ? `${tagName(shot.shooter_id)} eliminated ${tagName(shot.target_id)}`
+      : `${tagName(shot.shooter_id)} hit ${tagName(shot.target_id)} · ${shot.hp}/${shot.max_hp} HP`,
+    color,
+  );
+};
+combat.onMatch = (started, scores) => {
+  if (started) feed.push("Match started: guns are live", "#ffd34d");
+  else if (scores) {
+    const result = scores.winner === "tie" ? "it's a tie" : `${scores.winner} wins`;
+    feed.push(`Match over: ${result} (${scores.red_kills}–${scores.blue_kills})`, "#ffd34d");
+  }
+};
+document.querySelector<HTMLButtonElement>("#match-start")!.onclick = () => combat.start();
+document.querySelector<HTMLButtonElement>("#match-stop")!.onclick = () => {
+  if (confirm("End the match?")) combat.stop();
+};
+refreshPlayers();
 
 // ---- Render loop ----------------------------------------------------------------------------
 
@@ -377,16 +494,21 @@ renderer.setAnimationLoop((now) => {
 
   players.hiddenId = controls.mode === "follow" && !controls.thirdPerson ? followId : null;
   players.animate(dt, controls.camera, canvas.clientWidth, canvas.clientHeight);
+  keyPoints.setOverview(controls.mode === "overview");
+  keyPoints.animate(controls.camera, canvas.clientWidth, canvas.clientHeight);
+  tracers.animate(dt);
   renderer.render(scene, controls.camera);
 
   const view = { x: eye.position.x, z: eye.position.z, yaw: eye.rotation.y };
   const blips = players.poses();
   if (controls.mode !== "overview") {
     drawCompass(view, blips);
-    minimap.draw(view, blips, players.hiddenId);
+    minimap.draw(view, blips, players.hiddenId, keyPoints.holders());
   }
   if (now - hudAt > 200) {
     hudAt = now;
+    keyPoints.update(blips);
+    renderPointsPanel(keyPoints.holders(), addingPoint, pointActions);
     const mode = controls.mode === "follow"
       ? `Watching ${nameOf(followId ?? "")}${controls.thirdPerson ? " (shoulder)" : ""}`
       : { walk: "Walk", fly: "Fly", overview: "Map" }[controls.mode];

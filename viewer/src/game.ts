@@ -7,12 +7,16 @@
 import * as THREE from "three";
 import type { SplatMesh } from "@sparkjsdev/spark";
 import type { MapInfo } from "../server/maps.ts";
+import type { Team } from "./combat.ts";
 
 export interface GamePlayer {
   id: string;
   name: string;
   platform: string;
   connected: boolean;
+  /** Number on their chest tag: their player ID on the shooting server. */
+  tag: number | null;
+  team: Team | null;
   calibrated: boolean;
   steps: number;
   lost: number;
@@ -22,6 +26,15 @@ export interface GamePlayer {
   y?: number;
   spread?: number;
   heading?: number;
+}
+
+/** A key position the host marked for teams to claim (game map metres, r = radius). */
+export interface KeyPoint {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  r: number;
 }
 
 /** Which splat map (and which calibration of it) the game map was made from. */
@@ -38,6 +51,7 @@ export interface GameMap {
   height: number;
   image: { url: string; px: [number, number] } | null;
   walls: number[][];
+  points?: KeyPoint[];
   splat?: SplatLink;
 }
 
@@ -119,6 +133,11 @@ export class GameLink {
 
   remove(id: string) {
     this.send({ t: "remove", id });
+  }
+
+  /** Replace the key positions; the server stores them with the map and sends it back. */
+  setPoints(points: KeyPoint[]) {
+    this.send({ t: "points", points });
   }
 
   /** World-space floor position of a game map point. */
@@ -262,12 +281,14 @@ export async function publishGameMap(game: GameMap | null, map: MapInfo, mesh: S
     height,
     image: { url, px: [canvas.width, canvas.height] },
     walls: keep ? game!.walls : [],
+    points: keep ? (game!.points ?? []) : [],
     splat: { id: map.id, splatFile: map.splatFile, transform, x0, z0 },
   };
   const put = await fetch("/game/api/map", {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(next),
+    // Key positions stay with the server unless the frame changed and they'd be in the wrong place.
+    body: JSON.stringify({ ...next, pointsReset: !keep }),
   });
   if (!put.ok) throw new Error(`game map update failed: ${put.status}`);
   return next;

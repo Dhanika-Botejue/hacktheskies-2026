@@ -2,6 +2,11 @@
 
 Real-life, phone-based shooter + territory game. No special hardware — just phones and a laptop.
 
+> Part of the main project: `run.py` at the repo root starts this server alongside the position
+> tracking, and the **HTS Player** iPhone app streams its camera here (see `../SETUP.md`). The
+> commands below run it on its own: run them from this `combat/` folder, with the dependencies
+> from the root `requirements.txt`.
+
 ## How it works
 
 ```

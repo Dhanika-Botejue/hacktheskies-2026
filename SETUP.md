@@ -1,24 +1,41 @@
 # Setup & how to run
 
 Real-world capture the flag: scan the play area with an iPhone into a 3D Gaussian-splat map, then
-watch players move through it live on the laptop, first-person like a shooter map.
+watch players move through it live on the laptop, first-person like a shooter map. Players wear
+a phone and a printed AprilTag on their chest and shoot each other with finger guns.
 
 ```
 HackTheSkies app ──scan──▶ viewer (Node, :5173) ──trains──▶ 3D map ──▶ game map
-HTS Player app   ──pose──▶ game server (Python, :8443) ──live positions──▶ viewer
+HTS Player app   ──pose───▶ game server (Python, :8443) ──live positions──┐
+                 ──camera─▶ shooting server (Python, :8765/:8766)         ├──▶ viewer (spectator)
+                            finger gun + chest tag in view = hit ─────────┘
 ```
+
+The laptop is the spectator: it shows the scanned map, every player on it, their hit points, shots
+as tracers between shooter and target, the score, and key positions you mark for teams to claim.
 
 ## One-time setup
 
 ### Laptop (Mac, Apple Silicon)
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # game server
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # game + shooting servers
 tools/setup.sh                                                       # Brush splat trainer -> tools/bin
 cd viewer && npm install                                             # viewer
 ```
 
+The servers need **Python 3.10 or newer** (`python3 --version`). A Mac's built-in `python3` may be
+Xcode's 3.9: then make the venv with [uv](https://docs.astral.sh/uv/) instead:
+`uv venv --python 3.12 && uv pip install -r requirements.txt`.
+
 You also need **Xcode** (Mac App Store) to install the iPhone apps.
+
+### Chest tags
+
+Every player wears a printed AprilTag on their chest: its number is their player number, and it's
+what other players' cameras aim at. Print `combat/tags/print_tags.pdf` (players 1–10) as large as
+people can wear, A3/tabloid if possible, on matte paper, mounted on card so it stays flat. More
+numbers (up to 34): `cd combat && ../.venv/bin/python gen_tags.py --ids 11 12 --pdf`.
 
 ### iPhone apps
 
@@ -27,7 +44,7 @@ There are two apps. Build each from Xcode with the iPhone plugged in.
 | App | Open in Xcode | Used for |
 |---|---|---|
 | **HackTheSkies** | `app-ios/HackTheSkies.xcodeproj` | Scanning the map |
-| **HTS Player** | `ios/Player.swiftpm` | Playing (streams your position) |
+| **HTS Player** | `ios/Player.swiftpm` | Playing: streams your position and camera, hears reload claps |
 
 For each app:
 
@@ -39,7 +56,7 @@ First time only, on the iPhone:
 
 - Settings → Privacy & Security → **Developer Mode** on, then restart.
 - Settings → General → VPN & Device Management → trust your developer certificate.
-- Allow **camera** and **local network** access when asked.
+- Allow **camera**, **microphone** (HTS Player: reload claps) and **local network** access when asked.
 
 Apps signed with a free Apple ID stop opening after 7 days. Run them from Xcode again to fix that.
 
@@ -53,9 +70,12 @@ from reaching each other; a phone hotspot works as a fallback.
 Start both servers, each in its own terminal:
 
 ```sh
-.venv/bin/python run.py          # game server; prints the address phones join with, e.g. 10.110.0.189:8443
+.venv/bin/python run.py          # game + shooting servers; prints the address phones join with, e.g. 10.110.0.189:8443
 cd viewer && npm run dev         # viewer; open http://localhost:5173 on the laptop
 ```
+
+`run.py` starts the shooting server (`combat/server.py`) too, on ports 8765 (viewer) and 8766
+(phones). `--no-combat` skips it.
 
 If macOS asks whether Python or Node may accept incoming connections, click **Allow**.
 
@@ -86,11 +106,35 @@ Do this before placing players. Flip and Rotate reset player positions and walls
 
 ## 3. Join and place players
 
-1. Open **HTS Player**, enter a name and the game server address from `run.py` (e.g. `10.110.0.189:8443`), and tap **Join**.
-2. Hold the phone with its top pointing the way you face, upright (back camera forward, as if strapped to your chest), tilted or flat. Stand still at a spot that's easy to recognise in the scan, like a corner or a doorway.
+1. Open **HTS Player** and enter:
+   - a name;
+   - the game server address from `run.py` (e.g. `10.110.0.189:8443`);
+   - **Tag #**: the number on the tag you're wearing (1–34);
+   - your **team** (Red or Blue).
+
+   Tap **Join**. The second line of the screen shows the shooting server: hearts, gun state and a
+   green dot once it's joined.
+2. Strap the phone to your chest, screen facing you, back camera forward, with your tag on the outside.
+   Stand still at a spot that's easy to recognise in the scan, like a corner or a doorway.
 3. In the viewer's **Players** panel, click **Place**. On the top-down map, click where the player stands, then click the direction they face.
    - Or: walk to their spot in the 3D view, look the way they face, and press **P**.
-4. The phone shows **In game · camera**, and the player moves live on the laptop.
+4. The phone shows **In game · camera**, and the player moves live on the laptop in their team's colour.
+
+A player with no tag or team shows "can't be shot" in the Players panel.
+
+## 4. Play
+
+1. Mark the **key positions** teams fight over: in the viewer's **Key positions** panel click
+   **+ Add** (or press **K**), then click the top-down map. They're named A, B, C…; click a name to
+   rename it, **−/+** to change its radius. Each ring shows which team is standing in it right now
+   (yellow: both). Scoring for holding them comes later.
+2. Click **Start match** in the viewer's **Match** panel. Every phone says "Go!".
+3. Shoot: make a finger gun in front of your chest camera, one hand, and point it at another player's
+   tag. A hit takes one of their 3 hearts and empties your gun; **clap** near your phone to reload.
+   The phone says what happened ("Hit! Clap to reload", "You're down", "Back in"), since you can't see
+   its screen. Downed players come back after 10 s.
+4. On the laptop: shots fly as tracers between the two players, hit players flash, downed ones lie
+   down, and the feed and score update. Hold **Tab** for the scoreboard. **End match** shows the result.
 
 ## Viewer controls
 
@@ -101,9 +145,10 @@ Do this before placing players. Flip and Rotate reset player positions and walls
 | F | Fly / walk |
 | M | Top-down map (drag to pan, scroll to zoom) |
 | 1–9 | Watch a player through their eyes · **V** over the shoulder · WASD takes over |
-| Tab (hold) | Player list |
+| Tab (hold) | Scoreboard: team, HP, kills/deaths |
 | − / = | Minimap zoom |
 | P | Place the selected player where you stand |
+| K | Add a key position (then click the top-down map) |
 
 The 2D host page is at `https://localhost:8443/web/host.html` (accept the certificate warning). Use it
 to draw walls, which help tracking when it falls back to step counting.
@@ -120,8 +165,13 @@ curl -X POST --data-binary @/tmp/fakeroom.zip "localhost:5173/api/scans?name=Fak
 
 # Tests
 .venv/bin/python -m pytest -q
-cd viewer && npm run typecheck
+(cd combat && ../.venv/bin/python test_smoke.py && ../.venv/bin/python test_gun.py && ../.venv/bin/python test_api.py)
+(cd viewer && npm run typecheck)
 ```
+
+The shooting server also has its own phone page for Android or testing, with no position
+tracking: `https://<laptop-ip>:8766/phone`. See `combat/README.md` for how shooting works and how to
+tune it.
 
 For quicker training while testing, start the viewer with `TRAIN_STEPS=2000 EXPORT_EVERY=500 npm run dev`.
 
@@ -136,3 +186,8 @@ For quicker training while testing, start the viewer with `TRAIN_STEPS=2000 EXPO
 | Scan finished but the game map didn't change | Open or refresh http://localhost:5173 with the scan selected. The viewer sends the map to the game server. |
 | Player drifts or faces the wrong way | Place them again. Drawing walls on the 2D host page also helps the step-counting fallback. |
 | Training failed | Click the map, check the error, and make sure `tools/setup.sh` ran (`tools/bin/brush_app` exists). |
+| `run.py` crashes with `unsupported operand type(s) for \|` | The venv is on Python 3.9. Rebuild it on 3.10+ (see One-time setup). |
+| Match panel says "Shooting server offline" | `run.py` prints why it didn't start it (missing packages: `pip install -r requirements.txt`). |
+| Red dot on HTS Player's shooting line | The shooting server is on the same laptop at port 8766; check `run.py` started it and the address is right. |
+| Shots never land | The tag must be flat, large and in view of the shooter's camera, finger pointing at it. The status line on the phone says what's missing ("no tag in view", "point at the tag", "curl middle/ring to fire"). |
+| Clap doesn't reload | Allow the microphone for HTS Player; clap right next to the phone. The camera also sees claps as a backup. |

@@ -21,6 +21,8 @@ export class SpectatorControls {
   followPose: (() => Pose | null) | null = null;
   thirdPerson = false;
   onModeChange: (mode: Mode) => void = () => {};
+  /** A drag on the top-down map, in floor metres; return true to stop it panning the view. */
+  onOverviewDrag: (dx: number, dz: number) => boolean = () => false;
   private yaw = 0;
   private pitch = 0;
   private orbitYaw = 0; // third person: camera angle around the player, relative to their facing
@@ -129,9 +131,13 @@ export class SpectatorControls {
     if (this.mode === "overview") {
       if (!this.dragging) return;
       const metresPerPixel = this.overviewSize / this.canvas.clientHeight;
-      this.overview.position.x -= (e.clientX - this.dragging.x) * metresPerPixel;
-      this.overview.position.z -= (e.clientY - this.dragging.y) * metresPerPixel;
+      const dx = (e.clientX - this.dragging.x) * metresPerPixel;
+      const dz = (e.clientY - this.dragging.y) * metresPerPixel;
       this.dragging = { x: e.clientX, y: e.clientY };
+      // Something else may take the drag (moving a merged map's part); otherwise it pans.
+      if (this.onOverviewDrag(dx, dz)) return;
+      this.overview.position.x -= dx;
+      this.overview.position.z -= dz;
       return;
     }
     if (document.pointerLockElement !== this.canvas) return;

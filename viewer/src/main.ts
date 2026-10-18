@@ -4,7 +4,8 @@
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import type { MapInfo } from "../server/maps.ts";
-import { autoCalibrate, currentUp, nudgeFloor, rotateY90, sampleCenters } from "./calibrate.ts";
+import { align2D, placePoints, wallPoints } from "./align.ts";
+import { autoCalibrate, currentUp, nextUpAxis, nudgeFloor, rotateY90, sampleCenters } from "./calibrate.ts";
 import { CombatLink, TEAM_COLORS } from "./combat.ts";
 import { SpectatorControls } from "./controls.ts";
 import { GameLink, type KeyPoint, isLinked, mapOrigin, publishGameMap, yawToHeading } from "./game.ts";
@@ -16,7 +17,7 @@ import { PlayerLayer, playerColor } from "./players.ts";
 import { KeyPointLayer } from "./points.ts";
 import { TracerLayer } from "./tracers.ts";
 import {
-  type MapsState, renderMapList, setHud, setStatus, setupConnectPanel, setupUploads, subscribeMaps,
+  type MapsState, renderMapList, setHud, setStatus, setupConnectPanel, setupMerge, setupUploads, subscribeMaps,
 } from "./ui.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
@@ -65,20 +66,55 @@ resize();
 // ---- Map loading ----------------------------------------------------------------------------
 
 const SCAN_UP = [new THREE.Vector3(0, 1, 0)]; // phone scans are gravity-aligned already
-const ANY_UP = [new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)];
+// Splat files from other apps (Scaniverse, Polycam, 3DGS) keep Y vertical, one way round or the
+// other. A map that still comes out on its side is fixed with Tip over.
+const UPLOAD_UP = [new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0)];
+// Merged maps are built from parts that already have their floors at 0, Y up.
+const upFor = (m: MapInfo) => (m.source === "upload" ? UPLOAD_UP : SCAN_UP);
+const IDENTITY = new THREE.Matrix4().toArray();
+
+/** A splat file on screen; `matrix` places it in its map's raw frame (a merged map's part). */
+interface Part {
+  id: string;
+  mesh: SplatMesh;
+  matrix: THREE.Matrix4;
+}
+
+interface Loaded {
+  map: MapInfo;
+  root: THREE.Group; // carries map.transform: raw (or merged) frame → map
+  parts: Part[];
+  centers?: Float32Array;
+}
 
 let state: MapsState = { maps: [], activeId: null };
-let current: { map: MapInfo; mesh: SplatMesh; centers?: Float32Array } | null = null;
+let current: Loaded | null = null;
 let loadingKey: string | null = null;
 const calibrating = new Set<string>();
 
-const keyOf = (m: MapInfo) => `${m.id}/${m.splatFile}`;
+/** The files to load for a map: its splat, or a merged map's parts. */
+function filesOf(m: MapInfo) {
+  return m.parts
+    ? m.parts.map((p) => ({ id: p.id, url: `/maps/${p.id}/${p.splatFile}`, transform: p.transform }))
+    : [{ id: m.id, url: `/maps/${m.id}/${m.splatFile}`, transform: IDENTITY }];
+}
 
-function applyTransform(mesh: SplatMesh, transform: number[] | null) {
+// A merged map only reloads when its parts change, not when one is moved.
+const keyOf = (m: MapInfo) =>
+  m.parts ? `${m.id}/merged/${m.parts.map((p) => `${p.id}:${p.splatFile}`).join(",")}` : `${m.id}/${m.splatFile}`;
+
+function setMatrix(obj: THREE.Object3D, transform: ArrayLike<number> | null) {
   const m = new THREE.Matrix4();
   if (transform) m.fromArray(transform);
-  m.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  m.decompose(obj.position, obj.quaternion, obj.scale);
 }
+
+function unload(l: Loaded) {
+  scene.remove(l.root);
+  for (const p of l.parts) p.mesh.dispose();
+}
+
+const centersOf = (l: Loaded) => (l.centers ??= sampleCenters(l.parts));
 
 async function saveTransform(id: string, transform: number[] | null) {
   await fetch(`/api/maps/${id}`, {
@@ -91,42 +127,52 @@ async function saveTransform(id: string, transform: number[] | null) {
 async function loadMap(map: MapInfo) {
   const key = keyOf(map);
   loadingKey = key;
-  const mesh = new SplatMesh({ url: `/maps/${map.id}/${map.splatFile}` });
-  try {
-    await mesh.initialized;
-  } catch (err) {
-    console.error("failed to load splat", err);
+  const files = filesOf(map);
+  const meshes = files.map((f) => new SplatMesh({ url: f.url }));
+  const results = await Promise.allSettled(meshes.map((m) => m.initialized));
+  const parts: Part[] = [];
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") {
+      parts.push({ id: files[i].id, mesh: meshes[i], matrix: new THREE.Matrix4().fromArray(files[i].transform) });
+    } else {
+      console.error("failed to load splat", files[i].url, r.reason);
+      meshes[i].dispose();
+    }
+  });
+  if (loadingKey !== key || !parts.length) {
+    for (const p of parts) p.mesh.dispose(); // a newer preview or another map was requested meanwhile
     if (loadingKey === key) loadingKey = null;
-    mesh.dispose();
-    return;
-  }
-  if (loadingKey !== key) {
-    mesh.dispose(); // a newer preview or another map was requested meanwhile
     return;
   }
   loadingKey = null;
+  if (parts.length < files.length) feed.push(`${files.length - parts.length} part(s) of "${map.name}" didn't load`, "#ff5c6c");
 
+  const root = new THREE.Group();
+  for (const p of parts) {
+    setMatrix(p.mesh, p.matrix.toArray());
+    root.add(p.mesh);
+  }
+  const loaded: Loaded = { map, root, parts };
   const latest = state.maps.find((m) => m.id === map.id) ?? map;
-  let centers: Float32Array | undefined;
   let transform = latest.transform;
   if (!transform) {
-    centers = sampleCenters(mesh);
-    transform = autoCalibrate(centers, latest.source === "scan" ? SCAN_UP : ANY_UP);
+    transform = autoCalibrate(centersOf(loaded), upFor(latest));
     if (!calibrating.has(map.id)) {
       calibrating.add(map.id);
       saveTransform(map.id, transform).finally(() => calibrating.delete(map.id));
     }
   }
-  applyTransform(mesh, transform);
-  scene.add(mesh);
+  setMatrix(root, transform);
+  scene.add(root);
 
   const switchedMap = current?.map.id !== map.id;
-  if (current) {
-    scene.remove(current.mesh);
-    current.mesh.dispose();
+  if (current) unload(current);
+  loaded.map = { ...latest, transform };
+  current = loaded;
+  if (switchedMap) {
+    controls.resetPose();
+    alignId = null;
   }
-  current = { map: { ...latest, transform }, mesh, centers };
-  if (switchedMap) controls.resetPose();
   updateAdjustPanel();
   syncGameMap();
 }
@@ -138,13 +184,13 @@ async function loadMap(map: MapInfo) {
 let publishing = false;
 
 function syncGameMap() {
-  if (publishing || !game.connected || !game.map || !current?.map.transform) return;
-  const { map, mesh } = current;
+  if (publishing || partsDirty || !game.connected || !game.map || !current?.map.transform) return;
+  const { map, parts } = current;
   const transform = map.transform!;
   if (map.id !== state.activeId || isLinked(game.map, map, transform)) return;
   const fresh = game.map.splat?.id !== map.id;
   publishing = true;
-  publishGameMap(game.map, map, mesh, transform)
+  publishGameMap(game.map, map, parts, transform)
     .then((next) => {
       if (!next) return;
       game.map = next;
@@ -162,7 +208,9 @@ function syncGameMap() {
 
 function updateAdjustPanel() {
   const active = state.maps.find((m) => m.id === state.activeId);
-  document.querySelector<HTMLElement>("#adjust")!.hidden = !(active?.splatFile && current?.map.id === active.id);
+  const shown = !!(active?.splatFile && current?.map.id === active.id);
+  document.querySelector<HTMLElement>("#adjust")!.hidden = !shown;
+  renderAlignPanel(shown && !!current?.map.parts);
 }
 
 function onState(next: MapsState) {
@@ -184,14 +232,13 @@ function onState(next: MapsState) {
     );
   } else if (active.status === "training") {
     setStatus(`Training ${Math.round(active.progress * 100)}% · the map sharpens as it trains`, true);
-  } else {
+  } else if (!merging) {
     setStatus(null);
   }
 
   if (!active?.splatFile) {
     if (current && current.map.id !== active?.id) {
-      scene.remove(current.mesh);
-      current.mesh.dispose();
+      unload(current);
       current = null;
     }
     return;
@@ -199,9 +246,22 @@ function onState(next: MapsState) {
   const key = keyOf(active);
   if (current && keyOf(current.map) === key) {
     if (active.transform && JSON.stringify(active.transform) !== JSON.stringify(current.map.transform)) {
-      applyTransform(current.mesh, active.transform);
+      setMatrix(current.root, active.transform);
+      current.centers = undefined;
     }
-    current.map = { ...active, transform: active.transform ?? current.map.transform };
+    // Parts moved elsewhere (another viewer): follow, unless we're the ones moving them.
+    if (active.parts && !partsDirty) {
+      active.parts.forEach((p, i) => {
+        const part = current!.parts.find((q) => q.id === p.id);
+        if (part && JSON.stringify(part.matrix.toArray()) !== JSON.stringify(p.transform)) {
+          part.matrix.fromArray(p.transform);
+          setMatrix(part.mesh, p.transform);
+          current!.centers = undefined;
+        }
+        void i;
+      });
+    }
+    current.map = { ...active, transform: active.transform ?? current.map.transform, parts: partsDirty ? current.map.parts : active.parts };
   } else if (loadingKey !== key) {
     void loadMap(active);
   }
@@ -213,20 +273,191 @@ document.querySelectorAll<HTMLButtonElement>("[data-adjust]").forEach((btn) => {
   btn.onclick = () => {
     if (!current?.map.transform) return;
     const t = current.map.transform;
-    current.centers ??= sampleCenters(current.mesh);
+    const centers = centersOf(current);
     const next = {
-      flip: () => autoCalibrate(current!.centers!, [currentUp(t).negate()]),
+      flip: () => autoCalibrate(centers, [currentUp(t).negate()]),
+      tip: () => autoCalibrate(centers, nextUpAxis(t)),
       rotate: () => rotateY90(t),
       "floor-up": () => nudgeFloor(t, -0.05),
       "floor-down": () => nudgeFloor(t, 0.05),
-      reset: () => autoCalibrate(current!.centers!, current!.map.source === "scan" ? SCAN_UP : ANY_UP),
+      reset: () => autoCalibrate(centers, upFor(current!.map)),
     }[btn.dataset.adjust!]!();
     current.map.transform = next;
-    applyTransform(current.mesh, next);
+    setMatrix(current.root, next);
     void saveTransform(current.map.id, next);
     syncGameMap();
   };
 });
+
+// ---- Merging scans ----------------------------------------------------------------------------
+
+let merging = false;
+
+/** One map made of the ticked ones: each keeps its own floor calibration, and the viewer lines
+ * them up from above (best guess; fix it in Align parts). Merged maps can be merged again. */
+async function mergeMaps(maps: MapInfo[]) {
+  const name = prompt("Name the merged map", maps.map((m) => m.name).join(" + ").slice(0, 60));
+  if (name === null) return;
+  merging = true;
+  // Every input becomes a group of pieces (a merged input brings its parts, already arranged).
+  const groups = maps.map((m) =>
+    filesOf(m).map((f) => ({ id: f.id, splatFile: f.url.split("/").slice(3).join("/"), url: f.url, raw: new THREE.Matrix4().fromArray(f.transform), map: m })),
+  );
+  const pieces = groups.flat();
+  try {
+    setStatus(`Merging ${maps.length} maps: loading ${pieces.length} scans…`);
+    const meshes = pieces.map((p) => new SplatMesh({ url: p.url }));
+    await Promise.all(meshes.map((m) => m.initialized));
+    setStatus(`Merging ${maps.length} maps: lining them up…`);
+    await new Promise((r) => setTimeout(r, 30)); // let the message show
+    // Each piece into its own map's floor frame: map transform × part placement.
+    const placed = pieces.map((p, i) => {
+      const t = p.map.transform ?? autoCalibrate(sampleCenters([{ mesh: meshes[i], matrix: p.raw }]), upFor(p.map));
+      return new THREE.Matrix4().fromArray(t).multiply(p.raw);
+    });
+    // Line each map's walls up with the maps before it.
+    let start = groups[0].length;
+    let fixed = concat(groups[0].map((_, i) => wallPoints(meshes[i], placed[i])));
+    for (const group of groups.slice(1)) {
+      const idx = group.map((_, k) => start + k);
+      const moving = concat(idx.map((i) => wallPoints(meshes[i], placed[i])));
+      if (fixed.length && moving.length) {
+        const { matrix } = align2D(fixed, moving);
+        for (const i of idx) placed[i].premultiply(matrix);
+        fixed = concat([fixed, placePoints(moving, matrix)]);
+      }
+      start += group.length;
+    }
+    meshes.forEach((m) => m.dispose());
+    const res = await fetch("/api/maps/merge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, parts: pieces.map((p, i) => ({ id: p.id, splatFile: p.splatFile, transform: placed[i].toArray() })) }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error ?? `merge failed (${res.status})`);
+    feed.push(`Merged "${name}": check how the parts line up in Align parts`, "#ffd34d");
+  } catch (err) {
+    console.error(err);
+    alert(`Couldn't merge: ${(err as Error).message ?? err}`);
+  } finally {
+    merging = false;
+    setStatus(null);
+  }
+}
+
+function concat(arrays: Float32Array[]) {
+  const out = new Float32Array(arrays.reduce((n, a) => n + a.length, 0));
+  let o = 0;
+  for (const a of arrays) {
+    out.set(a, o);
+    o += a.length;
+  }
+  return out;
+}
+
+setupMerge((maps) => void mergeMaps(maps));
+
+// ---- Align parts (merged maps) ----------------------------------------------------------------
+
+let alignId: string | null = null;
+let partsDirty = false;
+let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+function renderAlignPanel(shown: boolean) {
+  const panel = document.querySelector<HTMLElement>("#align")!;
+  panel.hidden = !shown;
+  if (!shown || !current) {
+    alignId = null;
+    return;
+  }
+  const list = document.querySelector<HTMLUListElement>("#part-list")!;
+  list.replaceChildren(
+    ...current.parts.map((p) => {
+      const li = document.createElement("li");
+      li.className = p.id === alignId ? "active" : "";
+      li.textContent = state.maps.find((m) => m.id === p.id)?.name ?? p.id;
+      li.onclick = () => {
+        alignId = alignId === p.id ? null : p.id;
+        if (alignId) controls.setMode("overview");
+        renderAlignPanel(true);
+      };
+      return li;
+    }),
+  );
+  panel.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = !alignId));
+}
+
+const alignPart = () => current?.parts.find((p) => p.id === alignId) ?? null;
+
+/** Move a part by `delta`, given in map coordinates (what you see), and save it shortly. */
+function movePart(part: Part, delta: THREE.Matrix4) {
+  const root = new THREE.Matrix4().fromArray(current!.map.transform!);
+  part.matrix.premultiply(root.clone().invert().multiply(delta).multiply(root)); // root⁻¹ · delta · root
+  setMatrix(part.mesh, part.matrix.toArray());
+  current!.centers = undefined;
+  partsDirty = true;
+  clearTimeout(partsSaveTimer);
+  partsSaveTimer = setTimeout(savePartPlacement, 600);
+}
+
+async function savePartPlacement() {
+  if (!current?.map.parts) return;
+  const map = current.map;
+  const parts = map.parts!.map((p) => ({ ...p, transform: current!.parts.find((q) => q.id === p.id)?.matrix.toArray() ?? p.transform }));
+  map.parts = parts;
+  await fetch(`/api/maps/${map.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ parts }),
+  });
+  partsDirty = false;
+  syncGameMap(); // redraw the floor plan with the part where it is now
+}
+
+/** Where a part is on the map (map coordinates): the middle of its splats. */
+function partCentre(part: Part) {
+  const m = new THREE.Matrix4().fromArray(current!.map.transform!).multiply(part.matrix);
+  const pts = sampleCenters([{ mesh: part.mesh, matrix: m }]);
+  let x = 0, z = 0;
+  for (let i = 0; i < pts.length; i += 3) {
+    x += pts[i];
+    z += pts[i + 2];
+  }
+  const n = Math.max(1, pts.length / 3);
+  return { x: x / n, z: z / n };
+}
+
+controls.onOverviewDrag = (dx, dz) => {
+  const part = alignPart();
+  if (!part) return false;
+  movePart(part, new THREE.Matrix4().makeTranslation(dx, 0, dz));
+  return true;
+};
+
+document.querySelectorAll<HTMLButtonElement>("[data-turn]").forEach((btn) => {
+  btn.onclick = () => {
+    const part = alignPart();
+    if (!part) return;
+    const c = partCentre(part);
+    const turn = (-Number(btn.dataset.turn) * Math.PI) / 180; // positive = clockwise from above
+    movePart(
+      part,
+      new THREE.Matrix4().makeTranslation(c.x, 0, c.z).multiply(new THREE.Matrix4().makeRotationY(turn)).multiply(new THREE.Matrix4().makeTranslation(-c.x, 0, -c.z)),
+    );
+  };
+});
+
+document.querySelector<HTMLButtonElement>("#part-auto")!.onclick = () => {
+  const part = alignPart();
+  if (!part || !current) return;
+  const root = new THREE.Matrix4().fromArray(current.map.transform!);
+  const others = current.parts.filter((p) => p !== part);
+  const fixed = concat(others.map((p) => wallPoints(p.mesh, root.clone().multiply(p.matrix))));
+  const moving = wallPoints(part.mesh, root.clone().multiply(part.matrix));
+  if (!fixed.length || !moving.length) return feed.push("Not enough walls in these scans to line them up automatically", "#ff5c6c");
+  movePart(part, align2D(fixed, moving).matrix);
+  feed.push("Auto-aligned: drag or turn it if it's not right", "#ffd34d");
+};
 
 // ---- Players: spectating and placing ---------------------------------------------------------
 

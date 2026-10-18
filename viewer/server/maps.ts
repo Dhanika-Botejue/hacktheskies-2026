@@ -5,11 +5,21 @@ import { EventEmitter } from "node:events";
 
 export type MapStatus = "uploaded" | "training" | "ready" | "failed";
 
+/** One scan inside a merged map: its splat file and where it sits in the merged map. */
+export interface MapPart {
+  id: string; // the source map
+  splatFile: string;
+  /** Column-major 4x4 taking the part's raw splat coords into the merged map's frame. */
+  transform: number[];
+}
+
 export interface MapInfo {
   id: string;
   name: string;
   createdAt: string;
-  source: "scan" | "upload";
+  source: "scan" | "upload" | "merged";
+  /** Merged maps: the scans it's made of. Their files stay in the source maps' folders. */
+  parts?: MapPart[];
   status: MapStatus;
   progress: number; // 0..1 while training
   /** Latest renderable splat file inside the map folder (training previews replace it). */

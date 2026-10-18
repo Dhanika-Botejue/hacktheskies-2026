@@ -29,20 +29,40 @@
     <aside id="maps-panel" class="panel">
       <header>
         <h1>Maps</h1>
-        <label class="btn small" title="Load a .ply / .spz exported from another app">
-          Open file<input id="file-input" type="file" accept=".ply,.spz,.splat,.ksplat,.sog" hidden />
-        </label>
+        <span class="row">
+          <button id="merge-toggle" class="btn small" title="Combine several scans into one bigger map">Merge</button>
+          <label class="btn small" title="Load a .ply / .spz exported from another app">
+            Open file<input id="file-input" type="file" accept=".ply,.spz,.splat,.ksplat,.sog" hidden />
+          </label>
+        </span>
       </header>
+      <div id="merge-bar" hidden>
+        <span>Tick the scans to combine.</span>
+        <span class="row"><button id="merge-go">Tick 2 or more maps</button><button id="merge-cancel">Cancel</button></span>
+      </div>
       <ul id="map-list"></ul>
       <div id="adjust" hidden>
         <h2>Adjust map</h2>
         <div class="row">
           <button data-adjust="flip" title="Map is upside down">Flip</button>
+          <button data-adjust="tip" title="Map is lying on its side: try the next axis as up">Tip over</button>
           <button data-adjust="rotate" title="Rotate 90° around the vertical axis">Rotate 90°</button>
           <button data-adjust="floor-up" title="Raise floor 5 cm">Floor ▲</button>
           <button data-adjust="floor-down" title="Lower floor 5 cm">Floor ▼</button>
           <button data-adjust="reset" title="Re-run automatic floor detection">Auto</button>
         </div>
+      </div>
+      <div id="align" hidden>
+        <h2>Align parts</h2>
+        <ul id="part-list"></ul>
+        <div class="row">
+          <button data-turn="-15" title="Turn the selected part 15° left">⟲ 15°</button>
+          <button data-turn="-1" title="Turn 1° left">⟲ 1°</button>
+          <button data-turn="1" title="Turn 1° right">⟳ 1°</button>
+          <button data-turn="15" title="Turn 15° right">⟳ 15°</button>
+          <button id="part-auto" title="Line this part's walls up with the other parts">Auto-align</button>
+        </div>
+        <p class="empty">Pick a part, then drag it on the top-down map (<b>M</b>) until the walls line up.</p>
       </div>
     </aside>
 

@@ -11,11 +11,26 @@ export interface MapsState {
 function statusText(m: MapInfo) {
   if (m.status === "training") return `training ${Math.round(m.progress * 100)}%`;
   if (m.status === "uploaded") return "queued";
+  if (m.parts) return `merged · ${m.parts.length} scans`;
   return m.status;
 }
 
+// Merge mode: clicking maps ticks them instead of opening them.
+let selecting: Set<string> | null = null;
+let lastState: MapsState = { maps: [], activeId: null };
+
+const mergeable = (m: MapInfo) => m.status === "ready" && !!m.splatFile;
+
 export function renderMapList(state: MapsState) {
+  lastState = state;
   const list = $<HTMLUListElement>("#map-list");
+  $("#merge-bar").hidden = !selecting;
+  $<HTMLButtonElement>("#merge-toggle").classList.toggle("active", !!selecting);
+  if (selecting) {
+    const n = selecting.size;
+    $<HTMLButtonElement>("#merge-go").disabled = n < 2;
+    $<HTMLButtonElement>("#merge-go").textContent = n < 2 ? "Tick 2 or more maps" : `Merge ${n} maps`;
+  }
   if (!state.maps.length) {
     list.innerHTML = `<li class="empty">No maps yet. Scan one with the phone app.</li>`;
     return;
@@ -23,23 +38,51 @@ export function renderMapList(state: MapsState) {
   list.replaceChildren(
     ...state.maps.map((m) => {
       const li = document.createElement("li");
-      li.className = m.id === state.activeId ? "active" : "";
+      const ticked = !!selecting?.has(m.id);
+      li.className = [m.id === state.activeId && !selecting ? "active" : "", ticked ? "ticked" : "", selecting && !mergeable(m) ? "disabled" : ""].join(" ");
       li.innerHTML = `
-        <div class="title"><span class="name"></span><button class="delete" title="Delete map">✕</button></div>
+        <div class="title">${selecting ? `<input type="checkbox" ${ticked ? "checked" : ""} ${mergeable(m) ? "" : "disabled"}>` : ""}<span class="name"></span><button class="delete" title="Delete map">✕</button></div>
         <div class="meta"><span class="chip ${m.status}">${statusText(m)}</span><span>${
           m.frames ? `${m.frames} photos · ` : ""
         }${new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
         ${m.status === "training" || m.status === "uploaded" ? `<div class="bar"><div style="width:${m.progress * 100}%"></div></div>` : ""}
         ${m.status === "failed" ? `<div class="meta" title="${escapeAttr(m.error ?? "")}">${escapeHtml((m.error ?? "").slice(0, 120))}</div>` : ""}`;
       li.querySelector(".name")!.textContent = m.name;
-      li.onclick = () => fetch(`/api/maps/${m.id}/activate`, { method: "POST" });
-      li.querySelector<HTMLButtonElement>(".delete")!.onclick = (e) => {
+      li.onclick = () => {
+        if (!selecting) return void fetch(`/api/maps/${m.id}/activate`, { method: "POST" });
+        if (!mergeable(m)) return;
+        if (selecting.has(m.id)) selecting.delete(m.id);
+        else selecting.add(m.id);
+        renderMapList(lastState);
+      };
+      li.querySelector<HTMLButtonElement>(".delete")!.onclick = async (e) => {
         e.stopPropagation();
-        if (confirm(`Delete map "${m.name}"?`)) fetch(`/api/maps/${m.id}`, { method: "DELETE" });
+        if (!confirm(`Delete map "${m.name}"?`)) return;
+        const res = await fetch(`/api/maps/${m.id}`, { method: "DELETE" });
+        if (!res.ok) alert((await res.json()).error ?? "Couldn't delete the map");
       };
       return li;
     }),
   );
+}
+
+/** The Merge button and bar of the Maps panel. `onMerge` gets the ticked maps, in list order. */
+export function setupMerge(onMerge: (maps: MapInfo[]) => void) {
+  $<HTMLButtonElement>("#merge-toggle").onclick = () => {
+    selecting = selecting ? null : new Set();
+    renderMapList(lastState);
+  };
+  $<HTMLButtonElement>("#merge-cancel").onclick = () => {
+    selecting = null;
+    renderMapList(lastState);
+  };
+  $<HTMLButtonElement>("#merge-go").onclick = () => {
+    if (!selecting || selecting.size < 2) return;
+    const picked = lastState.maps.filter((m) => selecting!.has(m.id));
+    selecting = null;
+    renderMapList(lastState);
+    onMerge(picked);
+  };
 }
 
 function escapeHtml(s: string) {

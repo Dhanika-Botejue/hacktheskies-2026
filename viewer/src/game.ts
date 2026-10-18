@@ -167,9 +167,25 @@ function sameFrame(a: number[], b: number[]) {
   return JSON.stringify(planar(a)) === JSON.stringify(planar(b));
 }
 
+/** What the game map was drawn from: the splat file, or for a merged map where its parts sit
+ * (moving a part redraws the floor plan). */
+export function linkFile(map: MapInfo) {
+  if (!map.parts) return map.splatFile;
+  const text = JSON.stringify(map.parts.map((p) => [p.id, p.splatFile, p.transform.map((v) => Math.round(v * 1e3))]));
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return `merged:${h.toString(36)}`;
+}
+
 export function isLinked(game: GameMap | null, map: MapInfo, transform: number[]) {
   const s = game?.splat;
-  return !!s && s.id === map.id && s.splatFile === map.splatFile && JSON.stringify(s.transform) === JSON.stringify(transform);
+  return !!s && s.id === map.id && s.splatFile === linkFile(map) && JSON.stringify(s.transform) === JSON.stringify(transform);
+}
+
+/** A splat mesh on screen and where it sits in its map's raw frame (a merged map's part). */
+export interface PlacedMesh {
+  mesh: SplatMesh;
+  matrix: THREE.Matrix4;
 }
 
 interface FloorPoint {
@@ -181,18 +197,20 @@ interface FloorPoint {
   b: number;
 }
 
-function floorPoints(mesh: SplatMesh, transform: number[]): FloorPoint[] {
-  const m = new THREE.Matrix4().fromArray(transform);
-  const total = mesh.packedSplats?.numSplats ?? 0;
+function floorPoints(parts: PlacedMesh[], transform: number[]): FloorPoint[] {
+  const total = parts.reduce((n, p) => n + (p.mesh.packedSplats?.numSplats ?? 0), 0);
   const stride = Math.max(1, Math.floor(total / 600_000));
   const p = new THREE.Vector3();
   const out: FloorPoint[] = [];
-  mesh.forEachSplat((i, c, _s, _q, opacity, color) => {
-    if (i % stride !== 0 || opacity < 0.25) return;
-    p.copy(c).applyMatrix4(m);
-    if (p.y < -0.3 || p.y > CEILING_CUT) return;
-    out.push({ x: p.x, y: p.y, z: p.z, r: color.r, g: color.g, b: color.b });
-  });
+  for (const part of parts) {
+    const m = new THREE.Matrix4().fromArray(transform).multiply(part.matrix);
+    part.mesh.forEachSplat((i, c, _s, _q, opacity, color) => {
+      if (i % stride !== 0 || opacity < 0.25) return;
+      p.copy(c).applyMatrix4(m);
+      if (p.y < -0.3 || p.y > CEILING_CUT) return;
+      out.push({ x: p.x, y: p.y, z: p.z, r: color.r, g: color.g, b: color.b });
+    });
+  }
   return out;
 }
 
@@ -250,8 +268,8 @@ function renderFloorPlan(points: FloorPoint[], x0: number, z0: number, width: nu
  * coordinates. Walls drawn on the 2D host page and the map origin are kept while the map's
  * calibration (apart from the floor height) stays the same, so placed players keep their spots.
  */
-export async function publishGameMap(game: GameMap | null, map: MapInfo, mesh: SplatMesh, transform: number[]) {
-  const points = floorPoints(mesh, transform);
+export async function publishGameMap(game: GameMap | null, map: MapInfo, parts: PlacedMesh[], transform: number[]) {
+  const points = floorPoints(parts, transform);
   if (points.length < 100) return null;
   const xs = points.map((p) => p.x);
   const zs = points.map((p) => p.z);
@@ -282,7 +300,7 @@ export async function publishGameMap(game: GameMap | null, map: MapInfo, mesh: S
     image: { url, px: [canvas.width, canvas.height] },
     walls: keep ? game!.walls : [],
     points: keep ? (game!.points ?? []) : [],
-    splat: { id: map.id, splatFile: map.splatFile, transform, x0, z0 },
+    splat: { id: map.id, splatFile: linkFile(map), transform, x0, z0 },
   };
   const put = await fetch("/game/api/map", {
     method: "PUT",

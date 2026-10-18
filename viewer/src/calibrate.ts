@@ -6,14 +6,21 @@ import type { SplatMesh } from "@sparkjsdev/spark";
 const MAX_SAMPLES = 400_000;
 const BIN = 0.05; // metres
 
-/** Splat centres (raw file coords) of reasonably opaque splats, subsampled. */
-export function sampleCenters(mesh: SplatMesh): Float32Array {
-  const total = mesh.packedSplats?.numSplats ?? 0;
+/** Splat centres of reasonably opaque splats, subsampled: raw file coords, or placed by `matrix`
+ * (a merged map's parts). Several meshes share the sample budget. */
+export function sampleCenters(parts: { mesh: SplatMesh; matrix?: THREE.Matrix4 }[]): Float32Array {
+  const total = parts.reduce((n, p) => n + (p.mesh.packedSplats?.numSplats ?? 0), 0);
   const stride = Math.max(1, Math.floor(total / MAX_SAMPLES));
   const out: number[] = [];
-  mesh.forEachSplat((i, c, _s, _q, opacity) => {
-    if (i % stride === 0 && opacity > 0.3) out.push(c.x, c.y, c.z);
-  });
+  const v = new THREE.Vector3();
+  for (const { mesh, matrix } of parts) {
+    mesh.forEachSplat((i, c, _s, _q, opacity) => {
+      if (i % stride !== 0 || opacity <= 0.3) return;
+      v.copy(c);
+      if (matrix) v.applyMatrix4(matrix);
+      out.push(v.x, v.y, v.z);
+    });
+  }
   return new Float32Array(out);
 }
 
@@ -22,7 +29,6 @@ function percentile(sorted: Float32Array, p: number) {
 }
 
 const KEEP_RADIUS = 1.5; // × the distance from the middle that holds 90% of the splats
-const Z_UP_PENALTY = 0.7;
 
 /**
  * Drop splats far outside the scan itself. Scaniverse exports wrap the room in a background
@@ -46,50 +52,50 @@ function withoutFarSplats(pts: Float32Array): Float32Array {
   return Float32Array.from(out);
 }
 
-interface Peaks {
-  low: { h: number; count: number };
-  high: { h: number; count: number };
-}
+const FLOOR_DENSITY = 0.35; // a floor layer has at least this share of the densest layer's splats
 
-/** Densest height bin near the bottom and near the top of the cloud along `up`. */
-function findPeaks(pts: Float32Array, up: THREE.Vector3): Peaks {
+/**
+ * The floor along `up`: the LOWEST dense layer (desks and shelves can be denser than the floor,
+ * but they're above it), and how much of the scan is above it. Sparse noise beyond the floor
+ * (reflections "under" a shiny floor) doesn't matter, unlike a fit that only looks at the ends.
+ */
+function findFloor(pts: Float32Array, up: THREE.Vector3): { h: number; above: number } {
   const n = pts.length / 3;
   const h = new Float32Array(n);
   for (let i = 0; i < n; i++) h[i] = pts[3 * i] * up.x + pts[3 * i + 1] * up.y + pts[3 * i + 2] * up.z;
   const sorted = h.slice().sort();
-  const lo = percentile(sorted, 0.01);
-  const hi = percentile(sorted, 0.99);
+  const lo = percentile(sorted, 0.005);
+  const hi = percentile(sorted, 0.995);
   const bins = new Uint32Array(Math.max(1, Math.ceil((hi - lo) / BIN)));
   for (const v of h) {
     const b = Math.floor((v - lo) / BIN);
     if (b >= 0 && b < bins.length) bins[b]++;
   }
-  const band = Math.max(1, Math.floor(bins.length * 0.3));
-  let low = 0;
-  for (let b = 0; b < band; b++) if (bins[b] > bins[low]) low = b;
-  let high = bins.length - 1;
-  for (let b = bins.length - band; b < bins.length; b++) if (bins[b] > bins[high]) high = b;
-  return {
-    low: { h: lo + (low + 0.5) * BIN, count: bins[low] },
-    high: { h: lo + (high + 0.5) * BIN, count: bins[high] },
-  };
+  const peak = bins.reduce((m, c) => Math.max(m, c), 0);
+  const dense = FLOOR_DENSITY * peak;
+  let b = 0;
+  while (b < bins.length - 1 && bins[b] < dense) b++;
+  // A floor smeared over some height (tracking drift across a big scan): its densest part.
+  let floorBin = b;
+  for (; b < bins.length && bins[b] >= dense; b++) if (bins[b] > bins[floorBin]) floorBin = b;
+  const floor = lo + (floorBin + 0.5) * BIN;
+  let above = 0;
+  for (const v of h) if (v >= floor - 0.1) above++;
+  return { h: floor, above: above / n };
 }
 
 /**
  * Build the raw→map transform. `upCandidates` are raw-space directions that might be "up":
- * scans from our phone app are already gravity-aligned (+Y); arbitrary uploads try ±Y and ±Z.
- * A floor is a dense plane at the low end; scanners see more floor than ceiling, so the
- * direction with the stronger low-end peak wins.
+ * scans from our phone app are already gravity-aligned (+Y); uploads try ±Y. "Up" is the
+ * direction that puts the most of the scan above its floor (a room's contents stand on the
+ * floor; the wrong way round, the floor looks like a ceiling with everything hanging below it).
  */
 export function autoCalibrate(allPts: Float32Array, upCandidates: THREE.Vector3[]): number[] {
   const pts = withoutFarSplats(allPts);
   let best: { up: THREE.Vector3; floor: number; score: number } | null = null;
   for (const up of upCandidates) {
-    const peaks = findPeaks(pts, up);
-    // Splat files (Scaniverse, Polycam, 3DGS) almost always have ±Y vertical; Z only wins clearly.
-    const zUp = Math.abs(up.z) > Math.abs(up.y) ? Z_UP_PENALTY : 1;
-    const score = peaks.low.count * zUp * (upCandidates.length > 1 && peaks.low.count < peaks.high.count ? 0.5 : 1);
-    if (!best || score > best.score) best = { up: up.clone().normalize(), floor: peaks.low.h, score };
+    const f = findFloor(pts, up);
+    if (!best || f.above > best.score) best = { up: up.clone().normalize(), floor: f.h, score: f.above };
   }
   const { up, floor } = best!;
 
@@ -122,6 +128,17 @@ export function currentUp(transform: number[]): THREE.Vector3 {
   const m = new THREE.Matrix4().fromArray(transform);
   const inv = new THREE.Matrix3().setFromMatrix4(m).invert();
   return new THREE.Vector3(0, 1, 0).applyMatrix3(inv).normalize();
+}
+
+const AXES = [new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)];
+
+/** The next raw axis (Y → Z → X → Y) to try as "up", both ways round: for a map lying on its side,
+ * which Flip (upside down) and Rotate (about the vertical) can't fix. */
+export function nextUpAxis(transform: number[]): THREE.Vector3[] {
+  const up = currentUp(transform);
+  const i = [Math.abs(up.y), Math.abs(up.z), Math.abs(up.x)].reduce((best, v, k, a) => (v > a[best] ? k : best), 0);
+  const next = AXES[(i + 1) % AXES.length];
+  return [next.clone(), next.clone().negate()];
 }
 
 export function rotateY90(transform: number[]): number[] {

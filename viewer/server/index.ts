@@ -11,7 +11,8 @@ import { pipeline } from "node:stream/promises";
 import QRCode from "qrcode";
 import { createServer as createVite } from "vite";
 import {
-  MAPS_DIR, deleteMap, events, getActiveId, getMap, listMaps, mapDir, newMapId, saveMap, setActiveId, updateMap,
+  MAPS_DIR, type MapPart, deleteMap, events, getActiveId, getMap, listMaps, mapDir, newMapId, saveMap, setActiveId,
+  updateMap,
 } from "./maps.ts";
 import { enqueueTraining, resumeInterruptedTraining } from "./train.ts";
 
@@ -112,6 +113,39 @@ async function receiveScan(req: http.IncomingMessage, res: http.ServerResponse, 
   json(res, 201, { id });
 }
 
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+/** Validated merged-map parts: each names an existing map and one of its splat files. */
+function cleanParts(raw: unknown): MapPart[] | null {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 20) return null;
+  const out: MapPart[] = [];
+  for (const p of raw) {
+    const t = (p as MapPart)?.transform;
+    const file = (p as MapPart)?.splatFile;
+    const src = typeof (p as MapPart)?.id === "string" ? getMap((p as MapPart).id) : null;
+    if (!src || typeof file !== "string" || !/^[\w./-]+$/.test(file) || file.includes("..")) return null;
+    if (!Array.isArray(t) || t.length !== 16 || !t.every((v) => Number.isFinite(Number(v)))) return null;
+    out.push({ id: src.id, splatFile: file, transform: t.map(Number) });
+  }
+  return out;
+}
+
+/** POST /api/maps/merge  body: {name, parts: [{id, splatFile, transform}]}: a map made of several scans. */
+async function mergeMaps(req: http.IncomingMessage, res: http.ServerResponse) {
+  const body = await readJson(req);
+  const parts = cleanParts(body.parts);
+  if (!parts || parts.length < 2) return json(res, 400, { error: "pick at least two maps to merge" });
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 80) : "Merged map";
+  const id = newMapId(name);
+  saveMap({
+    id, name, createdAt: new Date().toISOString(), source: "merged", status: "ready",
+    // splatFile only marks the map as renderable; the viewer loads the parts' files.
+    progress: 1, splatFile: "merged", transform: IDENTITY, parts,
+  });
+  setActiveId(id);
+  json(res, 201, { id });
+}
+
 /** POST /api/maps?name=...&filename=scan.spz  body: a finished splat file (Scaniverse etc. fallback). */
 async function receiveSplat(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
   const filename = url.searchParams.get("filename") ?? "";
@@ -169,6 +203,7 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (method === "GET") return json(res, 200, { maps: listMaps(), activeId: getActiveId() });
     if (method === "POST") return receiveSplat(req, res, url);
   }
+  if (parts[1] === "maps" && parts[2] === "merge" && method === "POST") return mergeMaps(req, res);
   if (parts[1] === "maps" && parts[2]) {
     const id = parts[2];
     if (!getMap(id)) return json(res, 404, { error: "no such map" });
@@ -186,9 +221,17 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
       if (Array.isArray(body.transform) && body.transform.length === 16) patch.transform = body.transform.map(Number);
       if (body.transform === null) patch.transform = null;
       if (typeof body.name === "string") patch.name = body.name.slice(0, 80);
+      if (body.parts !== undefined && getMap(id)!.source === "merged") {
+        const next = cleanParts(body.parts);
+        if (!next) return json(res, 400, { error: "bad parts" });
+        patch.parts = next;
+      }
       return json(res, 200, updateMap(id, patch));
     }
     if (method === "DELETE") {
+      // A merged map reads its parts' files from their own folders.
+      const usedBy = listMaps().find((m) => m.parts?.some((p) => p.id === id));
+      if (usedBy) return json(res, 409, { error: `"${usedBy.name}" is made from this map: delete that first` });
       deleteMap(id);
       return json(res, 200, { ok: true });
     }

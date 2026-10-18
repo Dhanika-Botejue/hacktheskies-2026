@@ -49,9 +49,12 @@
     <aside id="match-panel" class="panel">
       <header><h1>Match</h1><span id="match-clock"></span></header>
       <div id="match-score"></div>
+      <label id="match-win-row">Win with
+        <input id="match-win" type="number" min="0.5" max="60" step="0.5" value="2" title="Total time a team must own the flag to win" />
+        min of flag time</label>
       <div class="row">
-        <button id="match-start" title="Players' guns go live">Start match</button>
-        <button id="match-stop" title="End the match and show the final score">End match</button>
+        <button id="match-start" title="Players' guns go live and the flag clocks start">Start match</button>
+        <button id="match-stop" title="End the match now: most flag time wins, then kills">End match</button>
       </div>
       <p id="match-note" class="empty"></p>
     </aside>
@@ -62,11 +65,9 @@
     </aside>
 
     <aside id="points-panel" class="panel">
-      <header>
-        <h1>Key positions</h1>
-        <button id="point-add" class="btn small" title="Click the top-down map to place a key position (K)">+ Add</button>
-      </header>
+      <header><h1>Bases &amp; flag</h1></header>
       <ul id="point-list"></ul>
+      <p class="empty hint">Downed players come back in at their own base. The team with more players in the flag's circle takes it; it stays theirs until the other team outnumbers them there.</p>
     </aside>
     </div>
 
@@ -93,7 +94,7 @@
       <span id="hud-pos"></span>
       <span id="hud-game"></span>
       <span id="hud-fps"></span>
-      <span class="keys">WASD move · Space jump · Shift sprint · <b>F</b> fly · <b>M</b> map · <b>K</b> add key position · <b>1–9</b> watch player · <b>Tab</b> players · <b>Esc</b> menu</span>
+      <span class="keys">WASD move · Space jump · Shift sprint · <b>F</b> fly · <b>M</b> map · <b>1–9</b> watch player · <b>Tab</b> players · <b>Esc</b> menu</span>
     </footer>
 
     <div id="drop-hint" hidden>Drop a .ply / .spz to add it as a map</div>

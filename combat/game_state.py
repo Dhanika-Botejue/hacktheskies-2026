@@ -1,9 +1,10 @@
 """
-game_state.py  (simplified — shoot-only)
-=========================================
+game_state.py
+=============
 Tracks players and processes shots.  Each player has MAX_HP hit points;
 each hit takes one, and the player dies when they reach zero.  Shooting is
-one-handed; after every hit the gun reloads with a clap (see Gun).
+one-handed; after every hit the gun reloads with a clap (see Gun).  The match
+itself (bases to respawn at, the flag, who wins) is objectives.py.
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple
+
+from objectives import RESPAWN_TIMER_S, Objectives
 
 log = logging.getLogger('hacktheskies.state')
 
@@ -73,32 +76,29 @@ class Player:
     gun: Gun = field(default_factory=Gun)
     ws: Any = field(default=None, repr=False)
     connected: bool = True       # False: phone dropped mid-game; kept so kills still count
+    respawn_mode: str = 'timer'  # 'base': walk back to your base | 'timer': respawn_at (not tracked / no base)
 
     def seconds_until_respawn(self) -> float:
         if self.alive:
             return 0.0
         return max(0.0, self.respawn_at - time.time())
 
-    def die(self, respawn_secs: float = 10.0):
+    def die(self, respawn_secs: float = RESPAWN_TIMER_S):
+        """respawn_secs: when they're back if they can't walk to their base (respawn_mode 'timer')."""
         self.alive = False
         self.respawn_at = time.time() + respawn_secs
         self.deaths += 1
         log.info(f'Player {self.player_id} died (deaths={self.deaths})')
 
     def respawn(self):
-        """Back in the game: full HP and a loaded gun.  Call this from whatever
-        decides respawning (the 10 s timer below is a placeholder for the
-        walk-back-to-your-spawn-point code); the phone plays its "Back in"
-        sound on its own when it sees the player alive again."""
+        """Back in the game: full HP and a loaded gun.  objectives.py calls it when
+        a downed player reaches their base (or their timer runs out); the phone
+        plays its "Back in" sound on its own when it sees the player alive again."""
         self.alive = True
         self.hp = MAX_HP
         self.respawn_at = 0.0
         self.gun.reset()
         log.info(f'Player {self.player_id} respawned')
-
-    def check_auto_respawn(self):
-        if not self.alive and time.time() >= self.respawn_at:
-            self.respawn()
 
     def to_dict(self) -> dict:
         return {
@@ -112,6 +112,7 @@ class Player:
             'connected':          self.connected,
             'respawn_at':         self.respawn_at if not self.alive else None,
             'seconds_to_respawn': round(self.seconds_until_respawn(), 1),
+            'respawn_mode':       self.respawn_mode,
         }
 
 
@@ -148,8 +149,11 @@ class GameState:
         self.players: Dict[int, Player] = {}
         self.game_active: bool = False
         self.game_start:  float = 0.0
+        self.end_reason:  Optional[str] = None   # 'flag' (a team's flag time ran out) | 'host' (ended by the host)
         self._lock = asyncio.Lock()
         self.claps = ClapReferee()
+        self.objectives = Objectives()
+        self.tracked: set[int] = set()           # players whose position the game server knows
 
     # ── Player management ────────────────────────────────────────────────
 
@@ -213,7 +217,7 @@ class GameState:
             killed = target.hp <= 0
             if killed:
                 target.hp = 0
-                target.die(respawn_secs=10.0)
+                target.die()
                 shooter.kills += 1
             log.info(f'P{shooter_id} hit P{target_id}: {target.hp}/{MAX_HP} HP'
                      f'{" (killed)" if killed else ""}')
@@ -226,21 +230,53 @@ class GameState:
                 'max_hp':     MAX_HP,
                 'killed':     killed,
                 'respawn_at': target.respawn_at if killed else None,
+                'respawn_mode': target.respawn_mode,
             }, 'hit'
 
-    # ── Auto-respawn ─────────────────────────────────────────────────────
-
-    async def check_auto_respawns(self):
+    async def respawn_player(self, player_id: int) -> bool:
+        """The host brings a downed player back by hand (their tracking went wrong)."""
         async with self._lock:
-            for p in self.players.values():
-                p.check_auto_respawn()
+            p = self.players.get(player_id)
+            if p is None or p.alive:
+                return False
+            p.respawn()
+            return True
+
+    # ── The match: bases, flag, winning ──────────────────────────────────
+
+    async def tick(self, positions: dict[int, tuple[float, float]],
+                   now: Optional[float] = None, wall: Optional[float] = None) -> list[dict]:
+        """Run the objectives (objectives.py) with everyone's tracked position
+        (player_id -> map x, y).  Returns what happened, for the host screens; a
+        team reaching its flag time ends the game ({'type': 'game_over', ...})."""
+        now  = time.monotonic() if now is None else now
+        wall = time.time() if wall is None else wall
+        async with self._lock:
+            self.tracked = set(positions)
+            if not self.game_active:
+                return []
+            events = self.objectives.update(self.players, positions, now, wall)
+            for e in events:
+                if e['type'] == 'respawned':
+                    log.info(f'Player {e["player_id"]} back in ({e["how"]})')
+                elif e['type'] == 'flag_taken':
+                    log.info(f'{e["team"].capitalize()} took the flag')
+                elif e['type'] == 'win':
+                    self.game_active, self.end_reason = False, 'flag'
+                    self.objectives.end()
+                    e.update(type='game_over', scores=self._scores_locked())
+                    log.info(f'Game over, {e["team"]} wins on flag time: {e["scores"]}')
+            return events
 
     # ── Game control ─────────────────────────────────────────────────────
 
-    async def start_game(self):
+    async def start_game(self, win_s=None):
+        """win_s: flag time that wins (objectives.DEFAULT_WIN_S if not given)."""
         async with self._lock:
             self.game_active = True
             self.game_start  = time.time()
+            self.end_reason  = None
+            self.objectives.reset(win_s)
             # Players whose phones left during the last game aren't in this one
             for pid in [pid for pid, p in self.players.items() if not p.connected]:
                 del self.players[pid]
@@ -251,11 +287,14 @@ class GameState:
                 p.kills      = 0
                 p.deaths     = 0
                 p.gun.reset()
-            log.info('Game started')
+            log.info(f'Game started (flag time to win: {self.objectives.win_s:.0f} s)')
 
     async def stop_game(self) -> dict:
         async with self._lock:
+            if self.game_active:
+                self.end_reason = 'host'
             self.game_active = False
+            self.objectives.end()
             scores = self._scores_locked()
             log.info(f'Game over: {scores}')
             return scores
@@ -267,15 +306,17 @@ class GameState:
         blue_k = sum(p.kills  for p in self.players.values() if p.team == 'blue')
         red_d  = sum(p.deaths for p in self.players.values() if p.team == 'red')
         blue_d = sum(p.deaths for p in self.players.values() if p.team == 'blue')
-        if red_k > blue_k:
-            winner = 'red'
-        elif blue_k > red_k:
-            winner = 'blue'
-        else:
-            winner = 'tie'
+        # Flag time decides (the team that owns the flag longest), then kills
+        winner = self.objectives.leading()
+        if winner is None:
+            winner = 'red' if red_k > blue_k else 'blue' if blue_k > red_k else 'tie'
+        o = self.objectives
         return {'red_kills': red_k, 'blue_kills': blue_k,
                 'red_deaths': red_d, 'blue_deaths': blue_d,
-                'winner': winner}
+                'flag': o.flag is not None,
+                'red_flag_s': round(o.held['red'], 1), 'blue_flag_s': round(o.held['blue'], 1),
+                'flag_owner': o.owner, 'win_s': o.win_s,
+                'winner': winner, 'reason': self.end_reason}
 
     def scores(self) -> dict:
         return self._scores_locked()
@@ -283,10 +324,11 @@ class GameState:
     # ── Snapshot ─────────────────────────────────────────────────────────
 
     def snapshot(self) -> dict:
-        import time as _t
         return {
-            'players':     {str(pid): p.to_dict() for pid, p in self.players.items()},
+            'players':     {str(pid): {**p.to_dict(), 'tracked': pid in self.tracked}
+                            for pid, p in self.players.items()},
             'scores':      self.scores(),
+            'objectives':  self.objectives.to_dict(time.monotonic()),
             'game_active': self.game_active,
-            'elapsed':     round(_t.time() - self.game_start, 1) if self.game_active else 0,
+            'elapsed':     round(time.time() - self.game_start, 1) if self.game_active else 0,
         }

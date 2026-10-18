@@ -51,15 +51,32 @@ python test_gun.py     # the whole gun end to end over real WebSockets: hits, HP
                        # kills, mic + camera reload, whose clap it was, reconnects
 python test_api.py     # real camera pipeline on real JPEGs (printed tag -> hit),
                        # web pages and downloads, the scan station, clothes -> hit
+python test_objectives.py  # the match: respawning at your base, taking and holding
+                       # the flag, winning on flag time; end to end with positions
 ```
 
-## Respawning (for the spawn-point code)
+## The match: bases and the flag
 
-Respawning is a placeholder: `GameState.check_auto_respawns` brings a player back
-10 s after dying. Replace it with the walk-back-to-your-spawn-point logic, and when
-a player should come back call `player.respawn()` — it refills HP and reloads the
-gun, and the phone plays its "Back in" sound by itself when it sees the player
-alive again.
+`objectives.py` runs the game, every 0.25 s (`GameState.tick`), with everyone's position
+from the game server (`tracking.py`: it connects to `GAME_SERVER`, default
+`https://127.0.0.1:8443`, as a read-only "watch" client and also gets the map's bases and
+flag, which the host places in the viewer). Players are matched by number: the game
+server's player `tag` is the `player_id` here.
+
+- A downed player is back in (`player.respawn()`: full HP, gun loaded) the moment their
+  position is inside their own team's base. A player who isn't tracked (not placed, no
+  game server, the web `/phone` page) or whose team has no base comes back after
+  `RESPAWN_TIMER_S` (10 s) instead; `respawn_mode` tells the phones which. The host can
+  also bring someone back by hand (`respawn_player`).
+- The team with more alive, tracked players inside the flag's circle takes the flag once
+  it has outnumbered the other team for `CAPTURE_S` (3 s). The owner keeps it until the
+  other team outnumbers them there; an empty or tied circle changes nothing.
+- The owner's clock runs; the first team to own the flag for `win_s` in total (set at the
+  start, default `DEFAULT_WIN_S` = 120 s) wins and the game ends (`scores.reason` `flag`).
+  Ended by the host: most flag time wins, then kills. No flag on the map: kills decide.
+
+Without a game server (this server run on its own) nobody is tracked: shooting works,
+downed players come back on the timer, and the flag can't be taken.
 
 ## File map
 
@@ -69,7 +86,9 @@ alive again.
 | `hand_detector.py` | MediaPipe Hands → finger-gun confidence score |
 | `person_id.py` | People (EfficientDet-Lite2) + their clothes (pose landmarker mask) → player ID from the body scans |
 | `tag_detector.py` | pupil-apriltags → player/base/flag ID from bib tags (`HTS_ID_MODE=tags`) |
-| `game_state.py` | Players, flags, shot resolution, scoring |
+| `game_state.py` | Players, shot resolution, scoring, the match clock |
+| `objectives.py` | The game: respawning at your base, taking and holding the flag, winning on flag time |
+| `tracking.py` | Positions and the map's bases/flag from the game server |
 | `static/phone.html` | Phone client (JS only does camera → JPEG → WS) |
 | `static/scan.html` | Scan station: one player at a time turns around in front of it |
 | `static/host.html` | Host dashboard (scoreboard, map, player list) |
@@ -212,4 +231,11 @@ Edit `game_state.py` for:
 ```python
 RESPAWN_DURATION = 20.0   # seconds dead
 SHOT_COOLDOWN    = 2.5    # seconds between shots
+```
+
+and `objectives.py` for the match:
+```python
+CAPTURE_S       = 3.0     # outnumber the owners in the flag circle this long to take it
+DEFAULT_WIN_S   = 120.0   # flag time that wins (the viewer's Match panel sets it per match)
+RESPAWN_TIMER_S = 10.0    # comeback for players who can't walk back to a base
 ```

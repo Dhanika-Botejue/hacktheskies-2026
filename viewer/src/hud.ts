@@ -1,10 +1,12 @@
 // Shooter-style overlays on the 3D view: compass strip with player bearings, rotating minimap,
 // hold-Tab scoreboard, event feed, the players panel used to spectate and place players, and
-// the match and key-position panels.
-import { type CombatLink, type Fighter, TEAM_COLORS, hearts } from "./combat.ts";
-import { type GameLink, type GamePlayer, type KeyPoint, mapOrigin } from "./game.ts";
+// the match and objectives (bases, flag) panels.
+import {
+  type CombatLink, type Fighter, type Objectives, TEAM_COLORS, TEAM_NAMES, type Team, clock, healthText,
+} from "./combat.ts";
+import { type GameLink, type GamePlayer, type MapObjective, mapOrigin } from "./game.ts";
 import { type Pose, playerColor } from "./players.ts";
-import { type Holder, holderColor } from "./points.ts";
+import { SLOTS, flagStatus, objectiveColor } from "./points.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -119,7 +121,7 @@ export class Minimap {
     img.src = url;
   }
 
-  draw(view: Viewpoint, blips: Blip[], selfId: string | null, points: { point: KeyPoint; holder: Holder }[]) {
+  draw(view: Viewpoint, blips: Blip[], selfId: string | null, points: MapObjective[], objs: Objectives | null) {
     this.syncImage();
     const { ctx, w, h } = sizeCanvas($<HTMLCanvasElement>("#minimap"));
     const r = Math.min(w, h) / 2;
@@ -160,9 +162,9 @@ export class Minimap {
       ctx.stroke();
     }
 
-    // Key positions: capture circle in the holder's colour, name upright.
-    for (const { point, holder } of points) {
-      const color = holderColor(holder);
+    // Bases in their team's colour, the flag in its owner's; names upright.
+    for (const point of points) {
+      const color = objectiveColor(point, objs);
       const cx = point.x + o.x;
       const cz = point.y + o.z;
       ctx.beginPath();
@@ -248,11 +250,6 @@ export class Minimap {
 
 const tagLabel = (p: GamePlayer) => (p.tag != null ? `#${p.tag}` : "no tag");
 
-function healthText(f: Fighter | null) {
-  if (!f) return "–";
-  return f.alive ? hearts(f) : `down ${Math.ceil(f.seconds_to_respawn)}s`;
-}
-
 export function renderScoreboard(players: GamePlayer[], combat: CombatLink) {
   const order = { red: 0, blue: 1 } as Record<string, number>;
   const sorted = [...players].sort((a, b) => (order[a.team ?? ""] ?? 2) - (order[b.team ?? ""] ?? 2));
@@ -311,6 +308,7 @@ export class Feed {
 export interface PlayerPanelActions {
   spectate: (id: string) => void;
   place: (id: string) => void;
+  respawn: (id: string) => void;
   remove: (id: string) => void;
 }
 
@@ -335,6 +333,7 @@ export function renderPlayersPanel(
           <div class="title">
             <span class="name"><span class="dot ${p.connected ? "on" : ""}"></span><span class="swatch" style="background:${playerColor(p)}"></span>${i < 9 ? `<kbd>${i + 1}</kbd>` : ""}${escapeHtml(p.name)}</span>
             <span class="row">
+              ${combat.fighter(p.tag)?.alive === false ? `<button data-act="respawn" title="Bring them back in now (e.g. their position is wrong and they can't reach their base)">Respawn</button>` : ""}
               <button data-act="spectate" title="Watch through their eyes (${i + 1})" ${p.calibrated ? "" : "disabled"}>Watch</button>
               <button data-act="place" title="Set where they stand (P)">Place</button>
               <button data-act="remove" class="delete" title="Forget this player">✕</button>
@@ -355,52 +354,90 @@ export function renderPlayersPanel(
   });
 }
 
-// ---- Match and key positions ------------------------------------------------------------------
+// ---- Match and objectives --------------------------------------------------------------------
 
-const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function flagClocks(held: Record<Team, number>, winS: number, owner: Team | null) {
+  return (["red", "blue"] as Team[]).map((t) => `
+    <div class="flag-clock${owner === t ? " owner" : ""}">
+      <span style="color:${TEAM_COLORS[t]}">${owner === t ? "⚑ " : ""}${TEAM_NAMES[t]}</span>
+      <div class="bar"><div style="width:${Math.min(100, (held[t] / winS) * 100)}%;background:${TEAM_COLORS[t]}"></div></div>
+      <span class="time">${clock(held[t])}</span>
+    </div>`).join("");
+}
 
-export function renderMatchPanel(combat: CombatLink, players: GamePlayer[]) {
+/** What's missing for the game to work, for the host to fix before (or during) the match. */
+function setupWarnings(combat: CombatLink, players: GamePlayer[], points: MapObjective[]) {
+  const warn: string[] = [];
+  const objs = combat.objectives;
+  if (!points.some((p) => p.kind === "flag")) warn.push("No flag on the map: nobody can win on flag time.");
+  for (const t of ["red", "blue"] as Team[]) {
+    if (!points.some((p) => p.kind === "base" && p.team === t)) {
+      warn.push(`No ${TEAM_NAMES[t]} base: ${TEAM_NAMES[t]}'s downed players come back after 10 s.`);
+    }
+  }
+  if (objs && !objs.tracking) warn.push("The shooting server can't reach the game server: it doesn't know where anyone is.");
+  const untagged = players.filter((p) => p.tag == null || !p.team).length;
+  if (untagged) warn.push(`${untagged} player${untagged === 1 ? " has" : "s have"} no tag/team and can't be shot.`);
+  return warn;
+}
+
+export function renderMatchPanel(combat: CombatLink, players: GamePlayer[], points: MapObjective[]) {
   const s = combat.scores;
+  const objs = combat.objectives;
   $("#match-clock").textContent = combat.active ? clock(combat.elapsed) : "";
-  $("#match-score").innerHTML = s
-    ? `<span style="color:${TEAM_COLORS.red}">Red ${s.red_kills}</span> – <span style="color:${TEAM_COLORS.blue}">${s.blue_kills} Blue</span>`
+  // The flag clocks while there is a flag (and after a flag match); kills underneath.
+  const flagMatch = !!objs?.flag || !!s?.flag;
+  const held = combat.active || !s ? objs?.held : { red: s.red_flag_s, blue: s.blue_flag_s };
+  const kills = s ? `<div class="kills"><span style="color:${TEAM_COLORS.red}">Red ${s.red_kills}</span> – <span style="color:${TEAM_COLORS.blue}">${s.blue_kills} Blue</span> kills</div>` : "";
+  const result = !combat.active && s?.reason
+    ? `<div class="result">${s.winner === "tie" ? "It's a tie" : `${TEAM_NAMES[s.winner]} wins`}${s.reason === "flag" ? " on the flag" : ""}</div>`
     : "";
+  const html = result + (flagMatch && held ? flagClocks(held, (combat.active ? objs?.win_s : s?.win_s) ?? 120, objs?.flag?.owner ?? null) : "") + kills;
+  if ($("#match-score").innerHTML !== html) $("#match-score").innerHTML = html;
+
   $<HTMLButtonElement>("#match-start").disabled = !combat.connected || combat.active;
   $<HTMLButtonElement>("#match-stop").disabled = !combat.connected || !combat.active;
-  const untagged = players.filter((p) => p.tag == null || !p.team).length;
-  $("#match-note").textContent = !combat.connected
+  $<HTMLInputElement>("#match-win").disabled = combat.active;
+  const warn = combat.connected ? setupWarnings(combat, players, points) : [];
+  const note = !combat.connected
     ? "Shooting server offline. run.py starts it (needs pip install -r requirements.txt)."
     : !combat.active
       ? `Not running. ${combat.fighters.size} phone${combat.fighters.size === 1 ? "" : "s"} streaming to the shooting server.`
-      : untagged
-        ? `${untagged} player${untagged === 1 ? " has" : "s have"} no tag/team and can't be shot.`
-        : "Live. Hits show as tracers; downed players lie down and come back after 10 s.";
+      : objs?.flag
+        ? `Live. Hold the flag ${clock(objs.win_s)} in total to win. Downed players walk back to their base.`
+        : "Live. Downed players walk back to their base.";
+  const html2 = `${note}${warn.map((w) => `<br><span class="warn">${w}</span>`).join("")}`;
+  if ($("#match-note").innerHTML !== html2) $("#match-note").innerHTML = html2;
 }
 
-export interface PointPanelActions {
-  rename: (id: string) => void;
+export interface ObjectivePanelActions {
+  place: (id: string) => void;
   resize: (id: string, delta: number) => void;
   remove: (id: string) => void;
 }
 
 let lastPointsHtml = "";
-export function renderPointsPanel(points: { point: KeyPoint; holder: Holder }[], adding: boolean, actions: PointPanelActions) {
+export function renderObjectivesPanel(points: MapObjective[], objs: Objectives | null, placing: string | null, actions: ObjectivePanelActions) {
   const list = $("#point-list");
-  $("#point-add").classList.toggle("active", adding);
-  const html = !points.length
-    ? `<li class="empty">None yet. Click <b>+ Add</b>, then click the top-down map where one goes.</li>`
-    : points.map(({ point, holder }) => `
-      <li data-id="${escapeHtml(point.id)}">
-        <span class="swatch" style="background:${holderColor(holder)}"></span>
-        <button data-act="rename" class="name" title="Rename">${escapeHtml(point.name)}</button>
-        <span class="holder">${holder === "contested" ? "contested" : holder ? `${holder} holds` : "empty"}</span>
+  const html = SLOTS.map((slot) => {
+    const point = points.find((p) => p.id === slot.id);
+    const color = point ? objectiveColor(point, objs) : slot.team ? TEAM_COLORS[slot.team] : "#e8ecf4";
+    const status = !point ? "not placed" : point.kind === "flag" ? flagStatus(objs, true) || "nobody's" : "";
+    return `
+      <li data-id="${slot.id}" class="${point ? "" : "unplaced"}">
+        <span class="swatch" style="background:${color}"></span>
+        <span class="name">${slot.name}</span>
+        <span class="holder">${escapeHtml(status)}</span>
         <span class="row">
+          <button data-act="place" class="${placing === slot.id ? "active" : ""}" title="Click the top-down map where it goes">${point ? "Move" : "Place"}</button>
+          ${point ? `
           <button data-act="shrink" title="Smaller radius">−</button>
           <span class="radius">${point.r.toFixed(1)} m</span>
           <button data-act="grow" title="Larger radius">+</button>
-          <button data-act="remove" class="delete" title="Remove">✕</button>
+          <button data-act="remove" class="delete" title="Remove">✕</button>` : ""}
         </span>
-      </li>`).join("");
+      </li>`;
+  }).join("");
   if (html === lastPointsHtml) return;
   lastPointsHtml = html;
   list.innerHTML = html;
@@ -409,7 +446,7 @@ export function renderPointsPanel(points: { point: KeyPoint; holder: Holder }[],
     btn.onclick = (e) => {
       e.stopPropagation();
       const act = btn.dataset.act;
-      if (act === "rename") actions.rename(id);
+      if (act === "place") actions.place(id);
       else if (act === "remove") actions.remove(id);
       else actions.resize(id, act === "grow" ? 0.5 : -0.5);
     };

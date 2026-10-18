@@ -28,9 +28,12 @@ export interface GamePlayer {
   heading?: number;
 }
 
-/** A key position the host marked for teams to claim (game map metres, r = radius). */
-export interface KeyPoint {
+/** An objective the host marked on the map (game map metres, r = radius): a team's base, where
+ * its downed players come back in, or the flag. One of each; the id is "base-red", "base-blue" or "flag". */
+export interface MapObjective {
   id: string;
+  kind: "base" | "flag";
+  team?: Team;
   name: string;
   x: number;
   y: number;
@@ -51,7 +54,7 @@ export interface GameMap {
   height: number;
   image: { url: string; px: [number, number] } | null;
   walls: number[][];
-  points?: KeyPoint[];
+  points?: MapObjective[];
   splat?: SplatLink;
 }
 
@@ -135,8 +138,8 @@ export class GameLink {
     this.send({ t: "remove", id });
   }
 
-  /** Replace the key positions; the server stores them with the map and sends it back. */
-  setPoints(points: KeyPoint[]) {
+  /** Replace the bases and flag; the server stores them with the map and sends it back. */
+  setPoints(points: MapObjective[]) {
     this.send({ t: "points", points });
   }
 
@@ -287,7 +290,7 @@ export async function publishGameMap(game: GameMap | null, map: MapInfo, mesh: S
   const put = await fetch("/game/api/map", {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    // Key positions stay with the server unless the frame changed and they'd be in the wrong place.
+    // The bases and flag stay with the server unless the frame changed and they'd be in the wrong place.
     body: JSON.stringify({ ...next, pointsReset: !keep }),
   });
   if (!put.ok) throw new Error(`game map update failed: ${put.status}`);

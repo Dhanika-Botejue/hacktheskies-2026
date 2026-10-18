@@ -75,14 +75,31 @@ work with `HTS_ID_MODE=tags`. How it works and how to tune it: [combat/README.md
 
 The viewer joins the two servers by player number (proxied at `/game/` and `/combat/`): avatars in
 team colours with hearts, tracers from shooter to target, a kill feed, the score, and the
-**Match** panel to start and end a match. **Key positions** (+ Add or **K**, then click the
-top-down map) are stored with the game map and show which team is standing in them; scoring for
-holding them is still to come. `COMBAT_SERVER` overrides where the viewer finds the shooting
+**Match** panel to start and end a match. `COMBAT_SERVER` overrides where the viewer finds the shooting
 server (default `http://127.0.0.1:8765`).
+
+## The game: two bases and a flag
+
+In the viewer's **Bases & flag** panel, **Place** the Red base, the Blue base and the Flag on the
+top-down map (they're stored with the game map; −/+ sets each one's radius).
+
+- **Respawning:** a downed player is back in the moment they walk into their own base. Players the
+  game can't locate (not placed, or no game server) and teams without a base come back after 10 s
+  instead. The Players panel has a **Respawn** button for when someone's tracking goes wrong.
+- **The flag:** the team with more players alive in the flag's circle takes it after 3 s. It stays
+  theirs, even with nobody in the circle, until the other team outnumbers them there.
+- **Winning:** while a team owns the flag its clock runs. The first team to own it for the time set
+  in the Match panel (default 2 min, in total) wins. **End match** early: most flag time wins, then kills.
+
+The shooting server runs these rules (`combat/objectives.py`): it follows everyone's position and
+the map's objectives from the game server (`run.py` passes it `GAME_SERVER`). The phones announce
+what matters by voice: "You're down. Back to your base", "We took the flag", "We win!".
+
 
 ## Testing without a phone
 
 ```sh
 python3 tools/fake_scan.py /tmp/fakeroom --zip      # synthetic room in the same format the app uploads
 curl -X POST --data-binary @/tmp/fakeroom.zip "localhost:5173/api/scans?name=Fake%20room"
+.venv/bin/python -m sim.simulate --players 4 --teams   # red and blue sim players walk the demo path and count for the flag
 ```

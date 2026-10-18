@@ -142,6 +142,7 @@ async def run() -> int:
     server.gallery = Gallery(scans_dir / 'gallery.json')
     server.ID_MODE = 'tags'                               # sections 2-4: printed bibs
 
+    server.feed.url = None   # no game server: positions don't matter here
     ts = TestServer(server.build_app())
     await ts.start_server()
     g = server.game

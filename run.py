@@ -65,14 +65,15 @@ def ensure_cert(ip: str) -> tuple[Path, Path]:
     return cert_path, key_path
 
 
-def start_combat(port: int) -> subprocess.Popen | None:
-    """The shooting server (combat/server.py: finger guns + chest tags) runs alongside: phones
-    stream camera frames to it on port+1 (HTTPS), the viewer reaches it on port (HTTP)."""
+def start_combat(port: int, game_server: str) -> subprocess.Popen | None:
+    """The shooting server (combat/server.py: finger guns, and the match: bases, flag) runs
+    alongside: phones stream camera frames to it on port+1 (HTTPS), the viewer reaches it on port
+    (HTTP), and it follows everyone's position from this game server (game_server)."""
     missing = [m for m in ("aiohttp", "cv2", "mediapipe", "pupil_apriltags") if importlib.util.find_spec(m) is None]
     if missing:
         print(f"  Shooting:  not started, missing {', '.join(missing)} (pip install -r requirements.txt)\n")
         return None
-    env = {**os.environ, "PORT": str(port), "HTTPS_PORT": str(port + 1)}
+    env = {**os.environ, "PORT": str(port), "HTTPS_PORT": str(port + 1), "GAME_SERVER": game_server}
     print(f"  Shooting:  http://localhost:{port}/ (phones stream to port {port + 1})\n")
     return subprocess.Popen([sys.executable, "server.py"], cwd=COMBAT_DIR, env=env)
 
@@ -95,7 +96,7 @@ def main():
     print(f"\n  Host map:  {scheme}://localhost:{args.port}/web/host.html")
     print(f"  Phones:    {scheme}://{ip}:{args.port}/web/phone.html")
     print(f"  Player app server address: {ip}:{args.port}\n")
-    combat = None if args.no_combat else start_combat(args.combat_port)
+    combat = None if args.no_combat else start_combat(args.combat_port, f"{scheme}://127.0.0.1:{args.port}")
     try:
         uvicorn.run("server.main:app", host="0.0.0.0", port=args.port, log_level="warning", **ssl)
     finally:

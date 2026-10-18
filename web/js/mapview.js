@@ -128,22 +128,25 @@ export class MapView {
     if (this.overlay) this.overlay(ctx, this);
   }
 
-  // Key positions the host marked in the 3D viewer: capture circle + name.
+  // The bases (in their team's colour) and the flag the host placed in the 3D viewer: circle + name.
   drawPoints() {
     const { ctx, scale: s } = this;
     for (const p of this.map.points || []) {
+      const color = SIDE_COLORS[p.team] || '#e8ecf4';
       ctx.beginPath();
       ctx.arc(p.x * s, p.y * s, p.r * s, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 211, 77, 0.12)';
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = color;
       ctx.fill();
-      ctx.strokeStyle = '#ffd34d';
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.stroke();
-      ctx.fillStyle = '#ffd34d';
+      ctx.fillStyle = color;
       ctx.font = '700 13px system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(p.name, p.x * s, p.y * s);
+      ctx.fillText(p.kind === 'flag' ? `⚑ ${p.name}` : p.name, p.x * s, p.y * s);
       ctx.textBaseline = 'alphabetic';
     }
   }

@@ -168,6 +168,23 @@ def test_rules():
     ps[2].die()
     o.update(ps, {1: AWAY, 2: IN_BLUE}, 0.0, ps[2].respawn_at)
     check('a team with no base: on the timer too', ps[2].alive and ps[2].respawn_mode == 'timer')
+    o, ps = rules(), team(red=[1], blue=[2])
+    ps[1].die()
+    wall = ps[1].respawn_at + 60
+    o.update(ps, {1: AWAY, 2: AWAY}, 0.0, wall)      # tracked, long past the timer
+    o.update(ps, {2: AWAY}, 1.0, wall + 2)           # then tracking drops out for a moment
+    check('tracking lost for a moment: still down, not back where they stand',
+          not ps[1].alive and ps[1].respawn_mode == 'timer')
+    ev = o.update(ps, {2: AWAY}, 2.0, wall + objectives.RESPAWN_TIMER_S)
+    check('...back in once the timer has run while untracked', ps[1].alive and ev[0]['how'] == 'timer', ev)
+
+    print('\n7b. Down: nothing counts')
+    o, ps = rules(), team(red=[1], blue=[2])
+    ps[1].die()
+    o.update(ps, {1: IN_FLAG, 2: AWAY}, 0.0, 0.0)
+    o.update(ps, {1: IN_FLAG, 2: AWAY}, objectives.CAPTURE_S + 1, 0.0)
+    check('a downed player in the flag circle neither takes it nor counts',
+          o.owner is None and o.inside['red'] == 0)
 
     print('\n8. No flag on the map')
     o, ps = rules((RED_BASE, BLUE_BASE)), team(red=[1], blue=[2])
@@ -215,6 +232,14 @@ async def test_game_state():
     check('a new game: nobody owns the flag, clocks at zero, default flag time',
           g.objectives.owner is None and g.objectives.held == {'red': 0, 'blue': 0}
           and g.objectives.win_s == objectives.DEFAULT_WIN_S and g.end_reason is None)
+    g.players[1].hp = 0
+    g.players[1].die()
+    check('down: the gun does nothing', await g.process_shot(1, 2) == (None, 'dead'))
+    check('down: nobody can shoot you again', await g.process_shot(2, 1) == (None, 'target_dead'))
+    await g.add_player(1, 'blue', None)
+    check('down, re-joining on the other team: still down',
+          not g.players[1].alive and g.players[1].team == 'blue' and g.players[1].hp == 0)
+    await g.add_player(1, 'red', None)
     s = await g.stop_game()
     check('ended by the host: reason host', s['reason'] == 'host', s)
     g.objectives.set_points([RED_BASE, BLUE_BASE])

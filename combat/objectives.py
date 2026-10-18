@@ -7,7 +7,8 @@ The game: two bases and a flag in the middle, marked by the host on the map
   * A downed player is back in the moment they step into their own team's
     base.  Players whose position isn't tracked (not placed, no game server,
     the web phone page) or whose team has no base come back on a timer instead,
-    so nobody is stuck down for good.
+    so nobody is stuck down for good; it only runs while they can't be tracked.
+    Down, a player can't shoot, reload or count in the flag's circle.
   * The team with more alive players inside the flag's circle takes the flag,
     once it has outnumbered the other for CAPTURE_S (a position that jitters
     across the edge can't steal it).  The owner keeps it until the other team
@@ -100,6 +101,10 @@ class Objectives:
             p.respawn_mode = 'base' if base and pos is not None else 'timer'
             if p.alive:
                 continue
+            if p.respawn_mode == 'base':
+                # The timer only runs while they can't be followed: losing tracking for a
+                # moment mustn't bring a downed player back where they stand.
+                p.respawn_at = max(p.respawn_at, wall + RESPAWN_TIMER_S)
             if p.respawn_mode == 'base' and base.contains(pos):
                 how = 'base'
             elif p.respawn_mode == 'timer' and wall >= p.respawn_at:

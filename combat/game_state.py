@@ -167,7 +167,10 @@ class GameState:
                 p.ws, p.connected = ws, True
                 log.info(f'Player {player_id} rejoined (hp={p.hp}, alive={p.alive})')
                 return p
-            p = Player(player_id=player_id, team=team, ws=ws)
+            old, p = p, Player(player_id=player_id, team=team, ws=ws)
+            if old is not None and self.game_active:
+                # Re-joining on the other team mid-game is no way out of being down (or a free heal)
+                p.alive, p.hp, p.respawn_at = old.alive, old.hp, old.respawn_at
             self.players[player_id] = p
             log.info(f'Registered player {player_id} team={team}')
             return p

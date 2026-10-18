@@ -230,3 +230,6 @@ viewer/maps/
 app-ios/*.xcodeproj/xcuserdata/
 app-ios/build/
 tools/share/
+
+# Shooting server's self-signed HTTPS cert (combat/server.py generates it)
+combat/certs/

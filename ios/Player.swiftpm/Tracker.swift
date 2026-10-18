@@ -30,6 +30,7 @@ final class Tracker: NSObject, ARSessionDelegate {
     var speed = 0.0
     var tracking = false
     var status = "Starting… move the phone slowly"
+    var lens = "1x"  // which camera ARKit runs on: "0.5x" (ultra-wide) if this phone allows it
 
     @ObservationIgnored private var origin: (x: Double, z: Double, yaw: Double)?
     @ObservationIgnored private var lastSample: (t: TimeInterval, p: TrailPoint)?
@@ -52,6 +53,14 @@ final class Tracker: NSObject, ARSessionDelegate {
         // Autofocus locks onto the nearest thing, your own hand, and blurs the chest tags you aim
         // at. Fixed focus keeps the room sharp: tags are much fussier about blur than hands are.
         config.isAutoFocusEnabled = false
+        // A wider view keeps your hand and the tags you aim at in frame together. World tracking
+        // normally only offers the 1x camera; use the 0.5x ultra-wide on phones whose ARKit offers it.
+        if let wide = ARWorldTrackingConfiguration.supportedVideoFormats.first(where: { $0.captureDeviceType == .builtInUltraWideCamera }) {
+            config.videoFormat = wide
+            lens = "0.5x"
+        } else {
+            lens = "1x"
+        }
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         origin = nil
         epoch += 1

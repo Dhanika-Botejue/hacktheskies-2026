@@ -159,7 +159,7 @@ struct ContentView: View {
             HStack {
                 Text(combat.error ?? combat.status).font(.footnote).foregroundStyle(combat.error == nil ? Color.primary : .red)
                 Spacer()
-                Text("🎤 \(combat.mic)").font(.caption2).foregroundStyle(.secondary)
+                Text("📷 \(tracker.lens) · 🎤 \(combat.mic)").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 10)

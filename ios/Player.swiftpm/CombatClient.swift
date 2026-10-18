@@ -50,6 +50,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
     @ObservationIgnored private var lastGun: String?
     @ObservationIgnored private var lastFlagOwner: String?
     @ObservationIgnored private var lastTimeLeft: Double?
+    @ObservationIgnored private var lastResult: String?
     @ObservationIgnored private var team = "red"
 
     override init() {
@@ -141,6 +142,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         case "registered":
             registered = true
             error = nil
+            if let t = msg["team"] as? String { team = t }  // the server's word on which team you're on
             noteIdentity(msg)
             status = idMode == "clothes" && scanned == false
                 ? "Joined · get scanned at the scan station so others can hit you" : "Joined the shooting server"
@@ -149,12 +151,16 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
             frameResult(msg)
         case "idle":
             inFlightSince = nil
-            if inGame { say(gameOver(msg["scores"] as? [String: Any])) }
+            if inGame {
+                lastResult = gameOver(msg["scores"] as? [String: Any])
+                say(lastResult!)
+            }
             inGame = false
             lastGun = nil
             lastFlagOwner = nil
             lastTimeLeft = nil
-            status = "Waiting for the host to start the match"
+            // The last result stays on screen until the next match starts.
+            status = lastResult.map { "\($0) · Waiting for the next match" } ?? "Waiting for the host to start the match"
         case "shot_event":
             wasHit(msg)
         default:
@@ -197,6 +203,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         let reloads = d["reloads"] as? Int ?? 0
         if justStarted {
             news.append("Go!")
+            lastResult = nil
         } else if !wasAlive && alive {
             news.append("Back in")
         } else if wasAlive && alive {
@@ -226,13 +233,19 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         if !news.isEmpty { say(news.joined(separator: ". ")) }
     }
 
+    /// The result, said the same way on every phone (which team, the score) and then what it means
+    /// for you: with phones next to each other, "they win" from the loser's phone was easy to take
+    /// for your own.
     private func gameOver(_ scores: [String: Any]?) -> String {
+        let red = scores?["red_kills"] as? Int ?? 0, blue = scores?["blue_kills"] as? Int ?? 0
+        let result: String
         switch scores?["winner"] as? String {
-        case team?: "Game over. We win!"
-        case "tie": "Game over. It's a tie"
-        case nil: "Game over"
-        default: "Game over. They win"
+        case "red"?: result = "Red wins, \(red) to \(blue). " + (team == "red" ? "We win!" : "We lose.")
+        case "blue"?: result = "Blue wins, \(blue) to \(red). " + (team == "blue" ? "We win!" : "We lose.")
+        case "tie"?: result = "It's a tie, \(red) all."
+        default: result = ""
         }
+        return "Game over. \(result)"
     }
 
     static func clock(_ s: Double) -> String {

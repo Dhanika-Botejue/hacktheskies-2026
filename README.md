@@ -1,4 +1,4 @@
-# hacktheskies-2026
+# R.E.A.C.T, Real Environment Augmented Combative Tactic
 
 Real-world capture the flag. Step 1: **scan the building with an iPhone → Gaussian-splat map → spectate it on the laptop.**
 

@@ -31,15 +31,30 @@ struct ContentView: View {
         ZStack {
             CameraView(tracker: tracker).ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                gameBar
-                if joined { combatBar }
-                HStack(spacing: 1) {
-                    stat("Distance", String(format: "%.1f m", tracker.distance))
-                    stat("Speed", String(format: "%.1f m/s", tracker.speed))
-                    stat("Heading", tracker.heading.map { "\(Int($0.rounded()))°" } ?? "–")
+            // Landscape (the phone is worn sideways): controls on the left, the map on the right.
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    gameBar
+                    if joined { combatBar }
+                    HStack(spacing: 1) {
+                        stat("Distance", String(format: "%.1f m", tracker.distance))
+                        stat("Speed", String(format: "%.1f m/s", tracker.speed))
+                        stat("Heading", tracker.heading.map { "\(Int($0.rounded()))°" } ?? "–")
+                    }
+                    .background(Color.gray.opacity(0.3))
+                    Spacer(minLength: 0)
+                    HStack(spacing: 8) {
+                        Button("Reset trail") { tracker.reset() }
+                            .buttonStyle(.bordered)
+                        Button(follow ? "Following" : "Show all") { follow.toggle() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(10)
+                    .background(Self.panel)
                 }
-                .background(Color.gray.opacity(0.3))
+                .frame(width: 420)
+                .background(Self.panel.opacity(0.85))
 
                 ZStack(alignment: .top) {
                     TrailCanvas(path: tracker.path, pos: tracker.pos, heading: tracker.heading, follow: follow)
@@ -52,16 +67,6 @@ struct ContentView: View {
                         .background(tracker.tracking ? TrailCanvas.green : Color.red, in: RoundedRectangle(cornerRadius: 8))
                         .padding(10)
                 }
-
-                HStack(spacing: 8) {
-                    Button("Reset trail") { tracker.reset() }
-                        .buttonStyle(.bordered)
-                    Button(follow ? "Following" : "Show all") { follow.toggle() }
-                        .buttonStyle(.borderedProminent)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(12)
-                .background(Self.panel)
             }
         }
         .overlay {

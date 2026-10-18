@@ -103,18 +103,31 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         inFlightSince = now
         lastSent = now
         let pixels = frame.capturedImage  // keep the pixel buffer, not the ARFrame
+        let orientation = Self.uprightOrientation()
         encoder.async { [weak self] in
             guard let self else { return }
-            let jpeg = encode(pixels)
+            let jpeg = encode(pixels, orientation)
             DispatchQueue.main.async {
                 if let jpeg { self.link.sendData(jpeg) } else { self.inFlightSince = nil }
             }
         }
     }
 
-    private func encode(_ pixels: CVPixelBuffer) -> Data? {
-        // The camera sensor is landscape; the phone is upright on your chest.
-        var image = CIImage(cvPixelBuffer: pixels).oriented(.right)
+    /// How to turn the camera's frame so people stand upright in it, for the way the phone is held:
+    /// the sensor's frames are landscape-right (the camera's native orientation). The hand and tag
+    /// detectors want the world the right way up.
+    static func uprightOrientation() -> CGImagePropertyOrientation {
+        let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+        switch scene?.interfaceOrientation {
+        case .landscapeRight: return .up
+        case .landscapeLeft: return .down
+        case .portraitUpsideDown: return .left
+        default: return .right  // portrait
+        }
+    }
+
+    private func encode(_ pixels: CVPixelBuffer, _ orientation: CGImagePropertyOrientation) -> Data? {
+        var image = CIImage(cvPixelBuffer: pixels).oriented(orientation)
         let scale = min(1, Self.maxSide / max(image.extent.width, image.extent.height))
         if scale < 1 { image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
         let quality = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7]

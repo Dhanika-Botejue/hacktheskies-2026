@@ -26,7 +26,8 @@ let package = Package(
                 .phone
             ],
             supportedInterfaceOrientations: [
-                .portrait
+                .landscapeRight,
+                .landscapeLeft
             ],
             capabilities: [
                 .camera(purposeString: "The camera tracks where you walk and sees your finger gun and other players' tags."),

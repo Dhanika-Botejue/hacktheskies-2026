@@ -223,6 +223,7 @@ __marimo__/
 data/
 
 # hacktheskies
+.build/
 node_modules/
 tools/bin/
 viewer/maps/

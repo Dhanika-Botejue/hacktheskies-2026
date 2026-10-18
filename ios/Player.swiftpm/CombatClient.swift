@@ -49,6 +49,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
     @ObservationIgnored private var lastReloads: Int?
     @ObservationIgnored private var lastGun: String?
     @ObservationIgnored private var lastFlagOwner: String?
+    @ObservationIgnored private var lastTimeLeft: Double?
     @ObservationIgnored private var team = "red"
 
     override init() {
@@ -139,6 +140,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
             inGame = false
             lastGun = nil
             lastFlagOwner = nil
+            lastTimeLeft = nil
             status = "Waiting for the host to start the match"
         case "shot_event":
             wasHit(msg)
@@ -168,6 +170,11 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         } else if let s = d["scores"] as? [String: Any] {
             score = "Red \(s["red_kills"] as? Int ?? 0) – \(s["blue_kills"] as? Int ?? 0) Blue"
         }
+        // Timed match: the countdown in front of the score, and a heads-up near the end.
+        let left = d["time_left"] as? Double
+        if let left { score = "\(Self.clock(left.rounded(.up))) · \(score)" }
+        let warnTenLeft = left.map { $0 <= 10 && (lastTimeLeft ?? .infinity) > 10 } ?? false
+        lastTimeLeft = left
         noteIdentity(d)
         status = Self.describe(d, idMode: idMode)
 
@@ -190,6 +197,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
             news.append(owner == team ? "We took the flag" : "They took the flag")
         }
         lastFlagOwner = owner
+        if warnTenLeft { news.append("10 seconds left") }
         lastReloads = reloads
         lastGun = gunNow
         gun = gunNow

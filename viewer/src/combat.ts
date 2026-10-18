@@ -39,9 +39,12 @@ export interface Scores {
   blue_flag_s: number;
   flag_owner: Team | null;
   win_s: number;
+  /** Match length (null: no time limit) and what's left of it: most kills at the end wins. */
+  match_s: number | null;
+  time_left: number | null;
   winner: Team | "tie";
-  /** Why the match ended: a team's flag time reached win_s, or the host ended it. */
-  reason: "flag" | "host" | null;
+  /** Why the match ended: time ran out, a team's flag time reached win_s, or the host ended it. */
+  reason: "time" | "flag" | "host" | null;
 }
 
 export interface Zone {
@@ -167,8 +170,9 @@ export class CombatLink {
   }
 
   /** winS: flag time that wins the match. */
-  start(winS: number) {
-    this.send({ type: "start_game", win_s: winS });
+  /** matchS: match length; the team with more kills when it runs out wins. */
+  start(matchS: number) {
+    this.send({ type: "start_game", match_s: matchS });
   }
 
   /** Bring a downed player back by hand (when their tracking went wrong). */

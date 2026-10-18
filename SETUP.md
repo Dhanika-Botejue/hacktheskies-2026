@@ -149,13 +149,15 @@ A player with no tag or team shows "can't be shot" in the Players panel.
 
 ## 4. Play
 
-1. Put down the bases and the flag: in the viewer's **Bases & flag** panel click **Place** next to
-   **Red base**, then click the top-down map where it goes. Same for **Blue base** and **Flag** (the
-   flag usually goes in the middle). **−/+** changes a radius: make them generous, since tracked
-   positions can be a metre or so off. **Move** puts one somewhere else.
-2. In the **Match** panel, set how long a team must hold the flag to win (default 2 min), then click
-   **Start match**. Every phone says "Go!". The panel warns if a base or the flag is missing, or if
-   the shooting server can't see positions.
+**The game:** two teams, a base each. The team with the most kills when the time runs out wins
+(30 s by default).
+
+1. Put down the bases: in the viewer's **Bases** panel click **Place** next to **Red base**, then
+   click the top-down map where it goes. Same for **Blue base**. **−/+** changes a radius: make them
+   generous, since tracked positions can be a metre or so off. **Move** puts one somewhere else.
+2. In the **Match** panel, set the **match length** (default 30 s), then click **Start match**. Every
+   phone says "Go!", the panel counts down, and the phones say "10 seconds left". The panel warns if a
+   base is missing, a player isn't scanned, or the shooting server can't see positions.
 3. Shoot: make a finger gun in front of your chest camera, one hand, and point it at another player
    (front, side or back). They're recognised by their clothes after a couple of frames, so hold the
    aim for a moment. A hit takes one of their 3 hearts and empties your gun; **clap** near your
@@ -165,15 +167,12 @@ A player with no tag or team shows "can't be shot" in the Players panel.
 4. **Down?** Walk back into your team's base: you're back in the moment you step inside. (Players
    the game can't locate come back after 10 s. If someone's position is wrong and they can't get
    back in, click **Respawn** next to them in the Players panel.)
-5. **The flag:** the team with more players alive inside the flag's circle takes it after 3 s; the
-   phones say "We took the flag" / "They took the flag". It stays yours, even if you all leave,
-   until the other team outnumbers you in the circle. While you own it your team's clock runs, and
-   losing it pauses your clock but doesn't reset it. The first team to reach the set time wins and
-   every phone says who won.
+5. **Time's up:** the team with more kills wins (equal kills: a tie), and every phone says who won.
 6. On the laptop: shots fly as tracers between the two players, hit players flash, downed ones lie
-   down, the flag and its ring turn the owner's colour (an arc fills while the other team is taking
-   it), and the Match panel shows both clocks. Hold **Tab** for the scoreboard. **End match** ends it
-   early: the team with more flag time wins, then kills.
+   down, and the Match panel shows the countdown and the kills. Hold **Tab** for the scoreboard.
+   **End match** ends it early: the team with more kills wins.
+
+(The shooting server still supports capture the flag, for later: see `combat/README.md`.)
 
 ## Viewer controls
 

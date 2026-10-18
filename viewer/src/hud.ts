@@ -372,7 +372,6 @@ function flagClocks(held: Record<Team, number>, winS: number, owner: Team | null
 function setupWarnings(combat: CombatLink, players: GamePlayer[], points: MapObjective[]) {
   const warn: string[] = [];
   const objs = combat.objectives;
-  if (!points.some((p) => p.kind === "flag")) warn.push("No flag on the map: nobody can win on flag time.");
   for (const t of ["red", "blue"] as Team[]) {
     if (!points.some((p) => p.kind === "base" && p.team === t)) {
       warn.push(`No ${TEAM_NAMES[t]} base: ${TEAM_NAMES[t]}'s downed players come back after 10 s.`);
@@ -390,28 +389,31 @@ function setupWarnings(combat: CombatLink, players: GamePlayer[], points: MapObj
 export function renderMatchPanel(combat: CombatLink, players: GamePlayer[], points: MapObjective[]) {
   const s = combat.scores;
   const objs = combat.objectives;
-  $("#match-clock").textContent = combat.active ? clock(combat.elapsed) : "";
-  // The flag clocks while there is a flag (and after a flag match); kills underneath.
+  // The countdown while a timed match runs (elapsed time for one with no limit).
+  const left = combat.active ? s?.time_left : null;
+  $("#match-clock").textContent = combat.active ? (left != null ? clock(Math.ceil(left)) : clock(combat.elapsed)) : "";
+  $("#match-clock").classList.toggle("ending", left != null && left <= 10);
+  // A flag only if one is on the map (the game is kills now); kills always.
   const flagMatch = !!objs?.flag || !!s?.flag;
   const held = combat.active || !s ? objs?.held : { red: s.red_flag_s, blue: s.blue_flag_s };
-  const kills = s ? `<div class="kills"><span style="color:${TEAM_COLORS.red}">Red ${s.red_kills}</span> – <span style="color:${TEAM_COLORS.blue}">${s.blue_kills} Blue</span> kills</div>` : "";
-  const result = !combat.active && s?.reason
-    ? `<div class="result">${s.winner === "tie" ? "It's a tie" : `${TEAM_NAMES[s.winner]} wins`}${s.reason === "flag" ? " on the flag" : ""}</div>`
+  const kills = s
+    ? `<div class="kills big"><span style="color:${TEAM_COLORS.red}">Red ${s.red_kills}</span><span class="vs">–</span><span style="color:${TEAM_COLORS.blue}">${s.blue_kills} Blue</span></div><div class="kills-label">kills</div>`
     : "";
-  const html = result + (flagMatch && held ? flagClocks(held, (combat.active ? objs?.win_s : s?.win_s) ?? 120, objs?.flag?.owner ?? null) : "") + kills;
+  const result = !combat.active && s?.reason
+    ? `<div class="result">${s.winner === "tie" ? "It's a tie" : `${TEAM_NAMES[s.winner]} wins`}${s.reason === "flag" ? " on the flag" : s.reason === "time" ? " on kills" : ""}</div>`
+    : "";
+  const html = result + kills + (flagMatch && held ? flagClocks(held, (combat.active ? objs?.win_s : s?.win_s) ?? 120, objs?.flag?.owner ?? null) : "");
   if ($("#match-score").innerHTML !== html) $("#match-score").innerHTML = html;
 
   $<HTMLButtonElement>("#match-start").disabled = !combat.connected || combat.active;
   $<HTMLButtonElement>("#match-stop").disabled = !combat.connected || !combat.active;
-  $<HTMLInputElement>("#match-win").disabled = combat.active;
+  $<HTMLInputElement>("#match-length").disabled = combat.active;
   const warn = combat.connected ? setupWarnings(combat, players, points) : [];
   const note = !combat.connected
     ? "Shooting server offline. run.py starts it (needs pip install -r requirements.txt)."
     : !combat.active
       ? `Not running. ${combat.fighters.size} phone${combat.fighters.size === 1 ? "" : "s"} streaming to the shooting server.`
-      : objs?.flag
-        ? `Live. Hold the flag ${clock(objs.win_s)} in total to win. Downed players walk back to their base.`
-        : "Live. Downed players walk back to their base.";
+      : "Live: most kills when the time runs out wins. Downed players walk back to their base.";
   const html2 = `${note}${warn.map((w) => `<br><span class="warn">${w}</span>`).join("")}`;
   if ($("#match-note").innerHTML !== html2) $("#match-note").innerHTML = html2;
 }

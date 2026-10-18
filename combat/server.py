@@ -36,7 +36,7 @@ WebSocket protocol — scan station (/ws/scan, static/scan.html)
 
 WebSocket protocol — host (/ws/host)
 --------------------------------------
-  Host -> Server:  JSON  {"type":"start_game","win_s":120} (win_s optional) | {"type":"stop_game"}
+  Host -> Server:  JSON  {"type":"start_game","match_s":30,"win_s":120} (both optional: match_s = match length, most kills wins; no match_s = no limit) | {"type":"stop_game"}
                          {"type":"respawn_player","player_id":7}   (back in by hand)
   Server -> Host:  JSON  state_update  (every 250 ms; objectives: bases, flag, clocks)
   Server -> Host:  JSON  shot_event    (push)
@@ -45,7 +45,7 @@ WebSocket protocol — host (/ws/host)
 
 REST
 -----
-  POST /api/start         Start game (optional JSON body {"win_s": 120})
+  POST /api/start         Start game (optional JSON body {"match_s": 30, "win_s": 120})
   POST /api/stop          Stop game
   GET  /api/state         Full game snapshot
   GET  /api/network-info  Returns LAN IP for phone auto-fill
@@ -524,6 +524,7 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     'type':          'frame_result',
                     'id_mode':       ID_MODE,
                     'scanned':       player.player_id in gallery,   # clothes mode: can others recognise you
+                    'time_left':     game.scores()['time_left'],     # null: no time limit
                     'pose':          round(pose, 3),
                     'armed':         armed,
                     'aiming_tag_id': tag['id'] if tag else target_id,
@@ -680,7 +681,7 @@ async def ws_host(request: web.Request) -> web.WebSocketResponse:
                     continue
                 t = data.get('type')
                 if t == 'start_game':
-                    await _start(data.get('win_s'))
+                    await _start(data.get('win_s'), data.get('match_s'))
                 elif t == 'stop_game':
                     scores = await game.stop_game()
                     await _broadcast_host({'type': 'game_over', 'scores': scores})
@@ -702,9 +703,11 @@ async def ws_host(request: web.Request) -> web.WebSocketResponse:
 
 # ── REST ──────────────────────────────────────────────────────────────────────
 
-async def _start(win_s=None):
-    await game.start_game(win_s)
-    await _broadcast_host({'type': 'game_started', 'win_s': game.objectives.win_s})
+async def _start(win_s=None, match_s=None):
+    """match_s: match length in seconds (most kills when it ends wins); none: no limit."""
+    await game.start_game(win_s, match_s)
+    await _broadcast_host({'type': 'game_started', 'win_s': game.objectives.win_s,
+                           'match_s': game.scores()['match_s']})
 
 
 async def api_start(request):
@@ -713,7 +716,8 @@ async def api_start(request):
     except json.JSONDecodeError:
         body = {}
     try:
-        await _start(body.get('win_s') if isinstance(body, dict) else None)
+        body = body if isinstance(body, dict) else {}
+        await _start(body.get('win_s'), body.get('match_s'))
         return web.json_response({'ok': True, 'win_s': game.objectives.win_s})
     except Exception as e:
         return web.json_response({'ok': False, 'error': str(e)}, status=500)

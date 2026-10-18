@@ -13,7 +13,9 @@ const NEUTRAL = "#e8ecf4";
 export const SLOTS: { id: string; kind: MapObjective["kind"]; team?: Team; name: string; r: number }[] = [
   { id: "base-red", kind: "base", team: "red", name: "Red base", r: 2.5 },
   { id: "base-blue", kind: "base", team: "blue", name: "Blue base", r: 2.5 },
-  { id: "flag", kind: "flag", name: "Flag", r: 3 },
+  // The flag (capture the flag) is still supported by the shooting server, but the game is now
+  // most kills in a timed match: only the bases are placed. Add { id: "flag", kind: "flag",
+  // name: "Flag", r: 3 } back here to bring it back.
 ];
 
 /** The colour an objective shows: its team's for a base, the owner's for the flag. */

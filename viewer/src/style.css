@@ -318,7 +318,12 @@ body[data-mode="overview"] #minimap-wrap { display: none; }
 
 #match-panel, #points-panel { flex: none; }
 #match-panel header { margin-bottom: 4px; }
-#match-clock { font: 700 13px ui-monospace, monospace; color: #ffd34d; }
+#match-clock { font: 700 22px ui-monospace, monospace; color: #ffd34d; font-variant-numeric: tabular-nums; }
+#match-clock.ending { color: var(--bad); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: 0.45; } }
+#match-score .kills.big { font-size: 24px; font-weight: 800; color: var(--text); display: flex; gap: 10px; align-items: baseline; }
+#match-score .kills.big .vs { color: var(--muted); font-weight: 400; }
+#match-score .kills-label { font-size: 11px; color: var(--muted); margin: -2px 0 6px; text-transform: uppercase; letter-spacing: 0.5px; }
 #match-score { font-variant-numeric: tabular-nums; margin-bottom: 8px; display: flex; flex-direction: column; gap: 5px; }
 #match-score:empty { display: none; }
 #match-score .result { font-size: 16px; font-weight: 700; color: #ffd34d; }

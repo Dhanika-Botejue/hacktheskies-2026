@@ -352,9 +352,42 @@ async def test_server():
     await ts.close()
 
 
+async def test_timed_match():
+    import game_state as gs
+    print('\n12. Timed match: most kills when the time is up')
+    g = gs.GameState()
+    await g.add_player(1, 'red', None)
+    await g.add_player(2, 'blue', None)
+    await g.start_game(match_s=30)
+    s = g.scores()
+    check('a 30 s match: 30 s on the clock', s['match_s'] == 30 and 29 <= s['time_left'] <= 30, s)
+    check('still running before time is up', await g.tick({}) == [] and g.game_active)
+    g.players[1].kills, g.players[2].kills = 3, 1
+    g.ends_at = time.monotonic() - 0.01          # the clock runs out
+    events = await g.tick({})
+    over = [e for e in events if e['type'] == 'game_over']
+    check('time up: game over, red wins on kills (3 to 1)',
+          over and over[0]['scores']['winner'] == 'red' and over[0]['scores']['reason'] == 'time'
+          and not g.game_active, events)
+    check('...and the clock shows 0', g.scores()['time_left'] == 0, g.scores())
+
+    await g.start_game(match_s=30)
+    g.players[1].kills = g.players[2].kills = 2
+    g.ends_at = time.monotonic() - 0.01
+    over = [e for e in await g.tick({}) if e['type'] == 'game_over']
+    check('equal kills when time is up: a tie', over and over[0]['scores']['winner'] == 'tie', over)
+
+    await g.start_game()
+    check('no match length: no time limit', g.scores()['match_s'] is None and g.scores()['time_left'] is None
+          and await g.tick({}) == [] and g.game_active, g.scores())
+    check('match lengths are kept sensible', gs.clamp_match_s(3) == 10 and gs.clamp_match_s('x') == float('inf')
+          and gs.clamp_match_s(-5) == float('inf') and gs.clamp_match_s(99999) == 3600)
+
+
 async def run() -> int:
     test_rules()
     await test_game_state()
+    await test_timed_match()
     test_feed()
     await test_server()
     print('\n' + '=' * 55)

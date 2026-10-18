@@ -20,6 +20,19 @@ log = logging.getLogger('hacktheskies.state')
 
 MAX_HP           = 3      # hits it takes to kill a player
 FRIENDLY_FIRE    = False
+DEFAULT_MATCH_S  = 30.0   # the viewer's default match length (most kills when it ends wins)
+MATCH_S_RANGE    = (10.0, 3600.0)
+
+
+def clamp_match_s(v) -> float:
+    """A match length from the host, in seconds; None or nonsense: no time limit."""
+    try:
+        s = float(v)
+    except (TypeError, ValueError):
+        return float('inf')
+    if s != s or s <= 0:  # NaN or not positive
+        return float('inf')
+    return min(max(s, MATCH_S_RANGE[0]), MATCH_S_RANGE[1])
 ARM_DELAY_S      = 1.0    # wait after a reload clap before the gun fires again
 CLAP_MATCH_S     = 0.25   # clap reports from different phones this close together = one clap
 
@@ -149,7 +162,10 @@ class GameState:
         self.players: Dict[int, Player] = {}
         self.game_active: bool = False
         self.game_start:  float = 0.0
-        self.end_reason:  Optional[str] = None   # 'flag' (a team's flag time ran out) | 'host' (ended by the host)
+        self.end_reason:  Optional[str] = None   # 'time' (the match ran out) | 'flag' (a team's flag time ran out) | 'host'
+        # Timed matches: most kills when the clock runs out wins.  ends_at is time.monotonic().
+        self.match_s:     float = float('inf')
+        self.ends_at:     float = float('inf')
         self._lock = asyncio.Lock()
         self.claps = ClapReferee()
         self.objectives = Objectives()
@@ -259,6 +275,13 @@ class GameState:
             if not self.game_active:
                 return []
             events = self.objectives.update(self.players, positions, now, wall)
+            if now >= self.ends_at:
+                # Time's up: most kills wins (see _scores_locked)
+                self.game_active, self.end_reason = False, 'time'
+                self.objectives.end()
+                scores = self._scores_locked()
+                log.info(f'Game over, time is up: {scores}')
+                return [e for e in events if e['type'] != 'win'] + [{'type': 'game_over', 'scores': scores}]
             for e in events:
                 if e['type'] == 'respawned':
                     log.info(f'Player {e["player_id"]} back in ({e["how"]})')
@@ -273,12 +296,16 @@ class GameState:
 
     # ── Game control ─────────────────────────────────────────────────────
 
-    async def start_game(self, win_s=None):
-        """win_s: flag time that wins (objectives.DEFAULT_WIN_S if not given)."""
+    async def start_game(self, win_s=None, match_s=None):
+        """match_s: how long the match lasts (no limit if not given; the viewer sends
+        DEFAULT_MATCH_S); the team with more kills when it ends wins.  win_s: flag time
+        that wins, if there's a flag."""
         async with self._lock:
             self.game_active = True
             self.game_start  = time.time()
             self.end_reason  = None
+            self.match_s     = clamp_match_s(match_s)
+            self.ends_at     = time.monotonic() + self.match_s
             self.objectives.reset(win_s)
             # Players whose phones left during the last game aren't in this one
             for pid in [pid for pid, p in self.players.items() if not p.connected]:
@@ -290,7 +317,7 @@ class GameState:
                 p.kills      = 0
                 p.deaths     = 0
                 p.gun.reset()
-            log.info(f'Game started (flag time to win: {self.objectives.win_s:.0f} s)')
+            log.info(f'Game started: {f"{self.match_s:.0f} s, most kills wins" if self.match_s != float("inf") else "no time limit"}')
 
     async def stop_game(self) -> dict:
         async with self._lock:
@@ -319,10 +346,17 @@ class GameState:
                 'flag': o.flag is not None,
                 'red_flag_s': round(o.held['red'], 1), 'blue_flag_s': round(o.held['blue'], 1),
                 'flag_owner': o.owner, 'win_s': o.win_s,
+                # JSON has no infinity: null = no time limit
+                'match_s': self.match_s if self.match_s != float('inf') else None,
+                'time_left': round(self.time_left(), 1) if self.ends_at != float('inf') else None,
                 'winner': winner, 'reason': self.end_reason}
 
     def scores(self) -> dict:
         return self._scores_locked()
+
+    def time_left(self) -> float:
+        """Seconds until the match ends (0 when no match is running)."""
+        return max(0.0, self.ends_at - time.monotonic()) if self.game_active else 0.0  # inf: no limit
 
     # ── Snapshot ─────────────────────────────────────────────────────────
 

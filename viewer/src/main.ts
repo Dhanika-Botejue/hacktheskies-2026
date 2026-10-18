@@ -693,14 +693,14 @@ combat.onShot = (shot) => {
 };
 combat.onMatch = (started, scores) => {
   if (started) {
-    const flag = objectives.points.some((p) => p.kind === "flag");
-    feed.push(flag ? `Match started: hold the flag ${clock(winSeconds())} to win` : "Match started: guns are live", "#ffd34d");
+    feed.push(`Match started: most kills in ${clock(matchSeconds())} wins`, "#ffd34d");
   } else if (scores) {
     const result = scores.winner === "tie" ? "it's a tie" : `${teamText(scores.winner)} wins`;
     const how = scores.flag
       ? `flag ${clock(scores.red_flag_s)}–${clock(scores.blue_flag_s)}, kills ${scores.red_kills}–${scores.blue_kills}`
-      : `${scores.red_kills}–${scores.blue_kills}`;
-    feed.push(`Match over: ${result}${scores.reason === "flag" ? " on the flag" : ""} (${how})`, "#ffd34d");
+      : `${scores.red_kills}–${scores.blue_kills} kills`;
+    const why = scores.reason === "time" ? "Time's up: " : scores.reason === "flag" ? "On the flag: " : "Match over: ";
+    feed.push(`${why}${result} (${how})`, "#ffd34d");
   }
 };
 combat.onFlag = ({ team, from }) =>
@@ -712,12 +712,12 @@ combat.onRespawn = ({ player_id, how }) => {
   feed.push(how === "base" ? `${name} is back in at base` : how === "host" ? `${name} brought back in by the host` : `${name} is back in`, color);
 };
 
-/** Flag time to win, from the Match panel (minutes). */
-function winSeconds() {
-  const min = Number(document.querySelector<HTMLInputElement>("#match-win")!.value);
-  return Number.isFinite(min) && min > 0 ? Math.round(min * 60) : 120;
+/** Match length from the Match panel (seconds): most kills when it runs out wins. */
+function matchSeconds() {
+  const s = Number(document.querySelector<HTMLInputElement>("#match-length")!.value);
+  return Number.isFinite(s) && s >= 10 ? Math.round(s) : 30;
 }
-document.querySelector<HTMLButtonElement>("#match-start")!.onclick = () => combat.start(winSeconds());
+document.querySelector<HTMLButtonElement>("#match-start")!.onclick = () => combat.start(matchSeconds());
 document.querySelector<HTMLButtonElement>("#match-stop")!.onclick = () => {
   if (confirm("End the match?")) combat.stop();
 };
@@ -798,11 +798,11 @@ function readyChecklist(): ReadyItem[] {
         : { state: "done", label: `${joined.length} player${joined.length === 1 ? "" : "s"} joined and placed` },
   );
   const has = (kind: string, team?: string) => objectives.points.some((p) => p.kind === kind && (!team || p.team === team));
-  const missingObj = [!has("base", "red") && "Red base", !has("base", "blue") && "Blue base", !has("flag") && "Flag"].filter(Boolean);
+  const missingObj = [!has("base", "red") && "Red base", !has("base", "blue") && "Blue base"].filter(Boolean);
   items.push(
     missingObj.length
-      ? { state: "todo", label: "Bases & flag", detail: `Place: ${missingObj.join(", ")}` }
-      : { state: "done", label: "Bases & flag placed" },
+      ? { state: "todo", label: "Bases", detail: `Place: ${missingObj.join(", ")}` }
+      : { state: "done", label: "Both bases placed" },
   );
   items.push(combat.active ? { state: "done", label: "Match running" } : { state: "todo", label: "Start match", detail: "In the Match panel" });
   return items;

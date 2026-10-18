@@ -32,13 +32,15 @@ Xcode's 3.9: then make the venv with [uv](https://docs.astral.sh/uv/) instead:
 
 You also need **Xcode** (Mac App Store) to install the iPhone apps.
 
-### Chest tags (optional, the old way)
+### Chest tags
 
-Players are recognised by their clothes (see **3. Join and place players**), so nothing needs
-printing. To identify them by printed AprilTag bibs instead, start the servers with
-`HTS_ID_MODE=tags` and print `combat/tags/print_tags.pdf` (players 1–10) as large as people can
-wear, on matte paper, mounted on card. More numbers (up to 34):
-`cd combat && ../.venv/bin/python gen_tags.py --ids 11 12 --pdf`.
+Every player wears a printed AprilTag on their chest: its number is their player number, and it's
+what other players' cameras aim at. Print `combat/tags/print_tags.pdf` (players 1–10; also in the
+viewer's **Get ready → Print tags**) as large as people can wear, on matte paper, mounted on card so
+it stays flat. More numbers (up to 34): `cd combat && ../.venv/bin/python gen_tags.py --ids 11 12 --pdf`.
+
+Recognising players by their clothes instead (no tags, a scan station before the game) is also
+built in: start the servers with `HTS_ID_MODE=clothes`. It's less reliable when outfits are alike.
 
 ### iPhone apps
 
@@ -121,20 +123,15 @@ If the map looks wrong, press **Esc** and use **Adjust map**:
 
 Do this before placing players. Flip and Rotate reset player positions and walls.
 
-## 3. Scan, join and place players
+## 3. Join and place players
 
-0. **Body scan, once per player per session** (and again if someone changes clothes, e.g. takes
-   off a jacket). On a spare iPhone, open the scan station at `https://<laptop IP>:8766/scan`
-   (tap through the certificate warning once) and prop it up at chest height. Enter the player's
-   number and tap **Start scan**; the player stands 2–4 m away, head to feet in view, and turns
-   around slowly (~8 s, the phone beeps and talks them through it). Next player.
-   - If the page warns that two players **look alike**, give one of them something distinctive
-     (a hat, a jacket, a bright scarf) and rescan: otherwise shots at them may not count.
-   - Scans are kept across server restarts (`combat/scans/`); the page lists them, with Delete.
+0. **Tags:** every player wears their printed chest tag (see **Chest tags**), each a different
+   number. (Only with `HTS_ID_MODE=clothes`: scan each player at `https://<laptop IP>:8766/scan`
+   instead; they stand 2–4 m away and turn around slowly.)
 1. Open **HTS Player** and enter:
    - a name;
    - the game server address from `run.py` (e.g. `10.110.0.189:8443`);
-   - **Tag #**: your player number (1–34), the one you were scanned as;
+   - **Tag #**: the number on the tag you're wearing (1–34);
    - your **team** (Red or Blue).
 
    Tap **Join**. The second line of the screen shows the shooting server: hearts, gun state and a
@@ -157,10 +154,9 @@ A player with no tag or team shows "can't be shot" in the Players panel.
    generous, since tracked positions can be a metre or so off. **Move** puts one somewhere else.
 2. In the **Match** panel, set the **match length** (default 30 s), then click **Start match**. Every
    phone says "Go!", the panel counts down, and the phones say "10 seconds left". The panel warns if a
-   base is missing, a player isn't scanned, or the shooting server can't see positions.
-3. Shoot: make a finger gun in front of your chest camera, one hand, and point it at another player
-   (front, side or back). They're recognised by their clothes after a couple of frames, so hold the
-   aim for a moment. A hit takes one of their 3 hearts and empties your gun; **clap** near your
+   base is missing or the shooting server can't see positions.
+3. Shoot: make a finger gun in front of your chest camera, one hand, and point it at another
+   player's chest tag. A hit takes one of their 3 hearts and empties your gun; **clap** near your
    phone to reload.
    The phone says what happened ("Hit! Clap to reload", "You're down. Back to your base", "Back in"),
    since you can't see its screen.

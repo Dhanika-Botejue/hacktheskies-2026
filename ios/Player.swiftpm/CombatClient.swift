@@ -147,7 +147,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         default:
             if let e = msg["error"] as? String {
                 inFlightSince = nil  // a frame's reply can be an error too
-                error = e == "invalid_player_id" ? "Player number must be 1–34" : e.replacingOccurrences(of: "_", with: " ")
+                error = e == "invalid_player_id" ? "Tag number must be 1–34" : e.replacingOccurrences(of: "_", with: " ")
             }
         }
     }

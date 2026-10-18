@@ -20,7 +20,7 @@ struct ContentView: View {
     @State private var joinError: String?
     @AppStorage("server") private var server = "10.110.0.189:8443"
     @AppStorage("name") private var name = ""
-    @AppStorage("tag") private var tag = 1  // your player number: the one you were scanned as at the scan station
+    @AppStorage("tag") private var tag = 1  // your player number: the one on your chest tag (or scanned as, in clothes mode)
     @AppStorage("team") private var team = "red"
 
     private static let teamColors = ["red": Color(red: 1, green: 0.3, blue: 0.37), "blue": Color(red: 0.3, green: 0.64, blue: 1)]
@@ -112,13 +112,13 @@ struct ContentView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text("Player #").font(.footnote).foregroundStyle(.secondary)
+                            Text("Tag #").font(.footnote).foregroundStyle(.secondary)
                             TextField("1–34", value: $tag, format: .number)
                                 .textFieldStyle(.roundedBorder)
                                 .keyboardType(.numberPad)
                                 .frame(width: 56)
                         }
-                        Text("the number you were scanned as").font(.caption2).foregroundStyle(.secondary)
+                        Text("the number on your chest tag").font(.caption2).foregroundStyle(.secondary)
                     }
                     Picker("Team", selection: $team) {
                         Text("Red").tag("red")
@@ -139,7 +139,7 @@ struct ContentView: View {
 
     private func join() {
         guard (1...34).contains(tag) else {
-            joinError = "Player # is the number you were scanned as at the scan station (1–34)"
+            joinError = "Tag # is the number on your printed chest tag (1–34)"
             return
         }
         joinError = nil
@@ -155,7 +155,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Circle().fill(combat.registered ? TrailCanvas.green : Color.red).frame(width: 8, height: 8)
-                Text("P\(tag) \(team.capitalized)").font(.footnote.bold()).foregroundStyle(color)
+                Text("#\(tag) \(team.capitalized)").font(.footnote.bold()).foregroundStyle(color)
                 Text(String(repeating: "♥", count: max(0, combat.hp)) + String(repeating: "♡", count: max(0, combat.maxHp - combat.hp)))
                     .foregroundStyle(Color(red: 1, green: 0.42, blue: 0.5))
                 Text(combat.alive ? gunText : combat.respawnMode == "base" ? "DOWN · TO BASE" : "DOWN").font(.footnote.bold())

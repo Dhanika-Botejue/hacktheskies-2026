@@ -778,6 +778,18 @@ function readyChecklist(): ReadyItem[] {
     items.push({ state: "warn", label: "Servers", detail: `${!game.connected ? "game server" : "shooting server"} offline: start run.py` });
   }
   const joined = game.players.filter((p) => p.connected);
+  // Tags mode: the station button prints the tags; clothes mode: it scans players.
+  const station = document.querySelector<HTMLAnchorElement>("#scan-station")!;
+  const tagsMode = combat.idMode === "tags";
+  if (station.dataset.mode !== combat.idMode) {
+    station.dataset.mode = combat.idMode;
+    station.textContent = tagsMode ? "Print tags" : "Scan station";
+    station.title = tagsMode ? "The printable chest tags (players 1–10), to print or show on a screen" : station.title;
+    if (tagsMode) station.href = "/combat/tags";
+  }
+  if (tagsMode) {
+    items.push({ state: "todo", label: "Tags on", detail: "Each player wears their printed chest tag, a different number" });
+  }
   if (combat.idMode === "clothes") {
     const scanned = joined.filter((p) => combat.fighter(p.tag)?.scanned);
     const missing = joined.filter((p) => !combat.fighter(p.tag)?.scanned).map((p) => p.name);

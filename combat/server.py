@@ -92,7 +92,7 @@ CERT_DIR   = Path(__file__).parent / 'certs'  # self-signed HTTPS cert (gitignor
 HTTPS_PORT = int(os.environ.get('HTTPS_PORT', PORT + 1))
 
 # How the target is told: 'clothes' (pre-game body scan at /scan) or 'tags' (printed bibs)
-ID_MODE = os.environ.get('HTS_ID_MODE', 'clothes')
+ID_MODE = os.environ.get('HTS_ID_MODE', 'tags')   # 'tags': printed AprilTag bibs (default) | 'clothes': scan station
 # Where players are (positions, bases and flag): the game server, as the viewer's GAME_SERVER
 GAME_SERVER = os.environ.get('GAME_SERVER', 'https://127.0.0.1:8443')
 

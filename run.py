@@ -6,8 +6,12 @@ HTTPS, so this generates a self-signed certificate on first run.
 
 import argparse
 import datetime
+import importlib.util
 import ipaddress
+import os
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -17,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 CERT_DIR = Path(__file__).resolve().parent / "data" / "certs"
+COMBAT_DIR = Path(__file__).resolve().parent / "combat"
 
 
 def lan_ip() -> str:
@@ -60,10 +65,24 @@ def ensure_cert(ip: str) -> tuple[Path, Path]:
     return cert_path, key_path
 
 
+def start_combat(port: int) -> subprocess.Popen | None:
+    """The shooting server (combat/server.py: finger guns + chest tags) runs alongside: phones
+    stream camera frames to it on port+1 (HTTPS), the viewer reaches it on port (HTTP)."""
+    missing = [m for m in ("aiohttp", "cv2", "mediapipe", "pupil_apriltags") if importlib.util.find_spec(m) is None]
+    if missing:
+        print(f"  Shooting:  not started, missing {', '.join(missing)} (pip install -r requirements.txt)\n")
+        return None
+    env = {**os.environ, "PORT": str(port), "HTTPS_PORT": str(port + 1)}
+    print(f"  Shooting:  http://localhost:{port}/ (phones stream to port {port + 1})\n")
+    return subprocess.Popen([sys.executable, "server.py"], cwd=COMBAT_DIR, env=env)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8443)
     parser.add_argument("--http", action="store_true", help="plain HTTP (e.g. behind an HTTPS tunnel)")
+    parser.add_argument("--combat-port", type=int, default=8765, help="shooting server port (HTTPS on the next one)")
+    parser.add_argument("--no-combat", action="store_true", help="don't start the shooting server")
     args = parser.parse_args()
 
     ip = lan_ip()
@@ -74,8 +93,15 @@ def main():
         ssl = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
         scheme = "https"
     print(f"\n  Host map:  {scheme}://localhost:{args.port}/web/host.html")
-    print(f"  Phones:    {scheme}://{ip}:{args.port}/web/phone.html\n")
-    uvicorn.run("server.main:app", host="0.0.0.0", port=args.port, log_level="warning", **ssl)
+    print(f"  Phones:    {scheme}://{ip}:{args.port}/web/phone.html")
+    print(f"  Player app server address: {ip}:{args.port}\n")
+    combat = None if args.no_combat else start_combat(args.combat_port)
+    try:
+        uvicorn.run("server.main:app", host="0.0.0.0", port=args.port, log_level="warning", **ssl)
+    finally:
+        if combat:
+            combat.terminate()
+            combat.wait(timeout=5)
 
 
 if __name__ == "__main__":

@@ -20,10 +20,14 @@ WEB = ROOT / "web"
 MAP_FILE = DATA / "map.json"
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 
-DEFAULT_MAP = {"width": 40.0, "height": 30.0, "image": None, "walls": []}
+DEFAULT_MAP = {"width": 40.0, "height": 30.0, "image": None, "walls": [], "points": []}
 BROADCAST_HZ = 20
 HOST_PARTICLES = 120
 SEND_TIMEOUT_S = 1.0
+TEAMS = ("red", "blue")
+MAX_TAG = 34  # player bibs are tag25h9 AprilTags 1-34, the IDs the shooting server (combat/) uses
+MAX_POINTS = 26
+POINT_RADIUS = (0.5, 10.0)  # m
 
 
 @dataclass
@@ -34,6 +38,8 @@ class Player:
     platform: str = "web"
     connected: bool = True
     truth: list | None = None  # ground truth from the simulator, for tuning
+    tag: int | None = None  # number on the player's chest tag: their ID on the shooting server
+    team: str | None = None
 
     def to_json(self, with_particles: bool) -> dict:
         f, t, now = self.fusion, self.fusion.tracker, time.monotonic()
@@ -42,6 +48,8 @@ class Player:
             "name": self.name,
             "platform": self.platform,
             "connected": self.connected,
+            "tag": self.tag,
+            "team": self.team,
             "calibrated": t.calibrated,
             "steps": f.steps,
             "lost": t.lost_steps,
@@ -109,17 +117,51 @@ class Game:
         elif kind == "truth":
             self.players[pid].truth = [msg["x"], msg["y"]]
 
-    def handle_host(self, msg: dict) -> None:
+    async def handle_host(self, msg: dict) -> None:
         kind = msg.get("t")
         p = self.players.get(msg.get("id", ""))
         if kind == "place" and p:
             p.fusion.calibrate(float(msg["x"]), float(msg["y"]), float(msg["mapHeading"]), time.monotonic())
         elif kind == "remove" and p:
             del self.players[p.id]
+        elif kind == "points":
+            # Key positions the host marked on the map, replaced as a whole.
+            self.set_map({**self.map, "points": clean_points(msg.get("points"))})
+            await self.broadcast({"t": "map", "map": self.map})
 
 
 def num(v) -> float | None:
     return None if v is None else float(v)
+
+
+def parse_tag(v) -> int | None:
+    try:
+        tag = int(v)
+    except (TypeError, ValueError):
+        return None
+    return tag if 1 <= tag <= MAX_TAG else None
+
+
+def parse_team(v) -> str | None:
+    team = str(v or "").lower()
+    return team if team in TEAMS else None
+
+
+def clean_points(points) -> list[dict]:
+    """Key positions: [{id, name, x, y, r}] in map metres, r = capture radius."""
+    out = []
+    for p in points if isinstance(points, list) else []:
+        try:
+            out.append({
+                "id": str(p["id"])[:40],
+                "name": str(p.get("name") or "?")[:24],
+                "x": round(float(p["x"]), 2),
+                "y": round(float(p["y"]), 2),
+                "r": round(min(max(float(p.get("r", 2.0)), POINT_RADIUS[0]), POINT_RADIUS[1]), 2),
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out[:MAX_POINTS]
 
 
 game = Game()
@@ -148,6 +190,10 @@ def get_map():
 @app.put("/api/map")
 async def put_map(request: Request):
     new_map = await request.json()
+    # Key positions only change through the host's "points" message: pages that save the map
+    # (walls on the 2D host page) may hold an old copy of them. The viewer clears them when the
+    # map's frame changes (a new scan, flip or rotate), since they'd no longer line up.
+    new_map["points"] = [] if new_map.pop("pointsReset", False) else game.map.get("points", [])
     game.set_map(new_map)
     await game.broadcast({"t": "map", "map": new_map})
     return {"ok": True}
@@ -187,6 +233,7 @@ async def websocket(ws: WebSocket):
             p = game.players.get(pid) or Player(id=pid, name=name)
             p.name, p.connected = name, True
             p.platform = str(hello.get("platform", "web"))
+            p.tag, p.team = parse_tag(hello.get("tag")), parse_team(hello.get("team"))
             game.players[pid] = p
             game.phones[ws] = pid
         await ws.send_json({"t": "map", "map": game.map})
@@ -194,7 +241,7 @@ async def websocket(ws: WebSocket):
         while True:
             msg = await ws.receive_json()
             if role == "host":
-                game.handle_host(msg)
+                await game.handle_host(msg)
             elif pid in game.players:
                 game.handle_phone(pid, msg)
     except WebSocketDisconnect:

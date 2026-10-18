@@ -3,6 +3,7 @@ uvicorn[standard]
 numpy
 cryptography
 pytest
+httpx2  # FastAPI TestClient (tests/test_server.py)
 
 # Shooting server (combat/): finger-gun + AprilTag detection, see combat/README.md
 aiohttp>=3.10

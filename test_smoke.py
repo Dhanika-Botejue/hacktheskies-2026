@@ -127,6 +127,53 @@ try:
     check("aim: far tiny tag missed when well off-angle",
           lambda: pick_aimed_tag([fake_tag(5, 1150, 600, r=6)], k, t) is None)   # ~17 deg off
 
+    from hand_detector import ClapTracker, own_palms, shooting_hand
+    def fake_hand(cx, cy, s=0.12):  # normalised coords; palm length (wrist -> middle knuckle) = s
+        lms = [(cx, cy)] * 21
+        lms[0], lms[9] = (cx, cy + s / 2), (cx, cy - s / 2)
+        return {'landmarks': lms}
+    L, R, far = fake_hand(.3, .5), fake_hand(.7, .5), fake_hand(.9, .4, s=.02)
+    near_hand = fake_hand(.2, .5, s=.2)   # biggest in frame = closest to the camera
+    check("hands: both your hands in view = no shooting (one-handed only)",
+          lambda: shooting_hand([L, R], 1000, 1000) is None)
+    check("hands: your hand shoots past a smaller, further-off hand",
+          lambda: shooting_hand([fake_hand(.7, .5, s=.08), near_hand], 1000, 1000) is near_hand)
+    check("hands: the only hand shoots",       lambda: shooting_hand([L], 1000, 1000) is L)
+    check("hands: none → no shooter",          lambda: shooting_hand([], 1000, 1000) is None)
+    check("hands: a far-away (other player's) hand is ignored",
+          lambda: shooting_hand([L, far], 1000, 1000) is L)
+    def claps(*frames, dt=0.1):   # each frame = list of hands; True if any frame reads as a clap
+        tracker = ClapTracker()
+        return any(tracker.update(own_palms(f, 1000, 1000), i * dt) for i, f in enumerate(frames))
+    near_l, near_r, mid = fake_hand(.3, .5), fake_hand(.7, .5), fake_hand(.5, .5)
+    check("clap: palms together in one frame", lambda: claps([fake_hand(.45, .5), fake_hand(.55, .5)]))
+    check("clap: hands approach, then merge into one", lambda: claps([near_l, near_r], [mid]))
+    check("clap: hands approach, then blur out",       lambda: claps([near_l, near_r], []))
+    check("clap: hands apart = no clap",       lambda: not claps([fake_hand(.1, .5), fake_hand(.9, .5)]))
+    check("clap: one hand only = no clap",     lambda: not claps([L], [L]))
+    check("clap: one hand leaving the frame isn't a clap", lambda: not claps([near_l, near_r], [near_l]))
+    check("clap: far-apart hands vanishing isn't a clap",  lambda: not claps([fake_hand(.1, .5), fake_hand(.9, .5)], []))
+    check("clap: hands meet within 0.8 s = clap",          lambda: claps([near_l, near_r], [], dt=0.7))
+    check("clap: too slow (> 0.8 s) isn't a clap",         lambda: not claps([near_l, near_r], [], dt=0.9))
+    # Fingers pointing away from a chest camera: wrist and middle knuckle nearly
+    # overlap in the image, but the knuckle line (index -> pinky) stays visible.
+    def end_on_hand(cx, cy, width=0.10):
+        lms = [(cx, cy)] * 21
+        lms[0], lms[9] = (cx, cy + .005), (cx, cy - .005)
+        lms[5], lms[17] = (cx, cy - width / 2), (cx, cy + width / 2)
+        return {'landmarks': lms}
+    pointing_away = end_on_hand(.5, .5)
+    check("hands: a hand pointing away from the camera still counts as yours",
+          lambda: shooting_hand([pointing_away], 1000, 1000) is pointing_away)
+    check("clap: hands pointing away from the camera can clap",
+          lambda: claps([end_on_hand(.44, .5), end_on_hand(.56, .5)]))
+    check("clap: a smaller (further away) hand can't clap with yours",
+          lambda: not claps([fake_hand(.45, .5, s=.2), fake_hand(.55, .5, s=.08)]))
+    check("clap: a third, further hand doesn't stop your clap",
+          lambda: claps([fake_hand(.45, .5), fake_hand(.55, .5), fake_hand(.9, .2, s=.07)]))
+    check("clap: other player's clap doesn't count",
+          lambda: not claps([fake_hand(.5, .3, s=.02), fake_hand(.52, .3, s=.02)]))
+
     from hand_detector import ready_to_fire
     pose = lambda **kw: {'index_extended': True, 'thumb_extended': False, 'middle_curled': False,
                          'ring_curled': False, 'pinky_curled': False, **kw}
@@ -159,44 +206,77 @@ try:
         check("player 2 registered",     lambda: 2 in g.players)
         check("player 1 alive",          lambda: g.players[1].alive)
 
-        # Shot: p1 shoots p2
+        # One-handed gun, driven with a fake clock: one clap reading per frame
         await g.start_game()
-        event, why = await g.process_shot(shooter_id=1, target_id=2)
+        gun, clock = g.players[1].gun, [100.0]
+        def frame(clapped=False, dt=0.1):
+            clock[0] += dt
+            gun.update(clapped, clock[0])
+        async def shoot(target):
+            return await g.process_shot(shooter_id=1, target_id=target, now=clock[0])
+        async def reload():
+            frame(True); frame(dt=1.0)
+
+        check("gun: starts loaded and ready", lambda: gun.state(clock[0]) == 'ready')
+        event, why = await shoot(2)
         check("shot event returned",     lambda: event is not None and why == 'hit')
         check("event has type",          lambda: event['type'] == 'shot_event')
         check("1 hit: target alive, 2 HP", lambda: g.players[2].alive and g.players[2].hp == 2
                                                     and not event['killed'])
+        _, why = await shoot(2)
+        check("gun: empty after a hit",  lambda: why == 'reload')
+        frame(); frame(dt=5.0)
+        check("gun: waiting doesn't reload, only a clap", lambda: gun.state(clock[0]) == 'reload')
+        frame(True)
+        _, why = await shoot(2)
+        check("gun: clap reloads, then 1 s wait", lambda: why == 'arming')
+        frame(dt=0.5)
+        check("gun: still waiting at 0.5 s", lambda: gun.state(clock[0]) == 'arming')
+        frame(dt=0.6)
+        check("gun: ready 1 s after the clap", lambda: gun.state(clock[0]) == 'ready')
+        frame(True)
+        check("gun: clapping while loaded changes nothing", lambda: gun.state(clock[0]) == 'ready')
 
-        # Cooldown: same shooter fires again immediately → should be rejected
-        event2, why2 = await g.process_shot(shooter_id=1, target_id=2)
-        check("cooldown prevents re-shot", lambda: event2 is None and why2 == 'cooldown')
+        # A miss (teammate) leaves the gun loaded: it keeps shooting until a hit
+        await g.add_player(3, 'red', ws=None)
+        event3, why3 = await shoot(3)
+        check("no friendly fire",        lambda: event3 is None and why3 == 'same_team')
+        check("gun: a miss keeps it loaded", lambda: gun.state(clock[0]) == 'ready')
 
         # 3 hits to kill
-        g.players[1].last_shot_at = 0
-        await g.process_shot(shooter_id=1, target_id=2)
+        await shoot(2)
         check("2 hits: target alive, 1 HP", lambda: g.players[2].alive and g.players[2].hp == 1)
-        g.players[1].last_shot_at = 0
-        event_k, _ = await g.process_shot(shooter_id=1, target_id=2)
+        await reload()
+        event_k, _ = await shoot(2)
         check("3 hits: target is dead",  lambda: not g.players[2].alive and event_k['killed'])
         check("shooter still alive",     lambda: g.players[1].alive)
         check("kill credited once",      lambda: g.players[1].kills == 1)
+        g.players[2].gun.fired()     # P2 died with an empty gun
         g.players[2].respawn()
         check("respawn restores HP",     lambda: g.players[2].hp == 3)
+        check("respawn: loaded and ready, no clap needed", lambda: g.players[2].gun.state(0) == 'ready')
         g.players[2].alive = False   # back to dead (no extra death) for the checks below
 
-        # Friendly fire off: p1 (red) can't shoot another red player
-        await g.add_player(3, 'red', ws=None)
-        g.players[1].last_shot_at = 0
-        event3, why3 = await g.process_shot(shooter_id=1, target_id=3)
-        check("no friendly fire",        lambda: event3 is None and why3 == 'same_team')
-
         # Already-dead target is rejected
-        event4, why4 = await g.process_shot(shooter_id=1, target_id=2)
+        await reload()
+        event4, why4 = await shoot(2)
         check("can't shoot a dead player", lambda: event4 is None and why4 == 'target_dead')
 
         # Unregistered target
-        event5, why5 = await g.process_shot(shooter_id=1, target_id=42)
+        event5, why5 = await shoot(42)
         check("unknown target rejected", lambda: event5 is None and why5 == 'target_not_in_game')
+
+        # Whose clap was it?  The phone that heard it loudest.
+        from game_state import ClapReferee
+        ref = ClapReferee()
+        ref.heard(1, 0.6, 10.00); ref.heard(2, 0.95, 10.08)            # P2 claps next to P1
+        check("clap referee: waits for other phones' reports", lambda: ref.settle(10.1) == [])
+        check("clap referee: loudest phone owns the clap", lambda: ref.settle(10.3) == [(2, [1])])
+        ref.heard(1, 0.9, 20.0)
+        check("clap referee: a clap nobody else heard is yours", lambda: ref.settle(20.3) == [(1, [])])
+        ref.heard(1, 0.9, 30.0); ref.heard(2, 0.9, 31.0)                # 1 s apart = two claps
+        check("clap referee: separate claps stay separate",
+              lambda: ref.settle(31.3) == [(1, []), (2, [])])
 
         # Reconnect: P2 re-registers on a new socket; the old socket closing late must not remove it
         old_ws, new_ws = object(), object()

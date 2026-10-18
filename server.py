@@ -6,6 +6,8 @@ HackTheSkies: finger-gun + AprilTag shooting game.
 WebSocket protocol — phone (/ws/phone)
 ---------------------------------------
   Phone -> Server:  JSON  {"type":"register","player_id":7,"team":"red"}
+  Phone -> Server:  JSON  {"type":"clap","peak":0.83}   (mic heard a clap; sent for
+                    every clap, so the server can tell whose it was — see ClapReferee)
   Phone -> Server:  BINARY  <raw JPEG bytes>  (~10 fps)
   Server -> Phone:  JSON  frame_result   (after every frame)
   Server -> Phone:  JSON  shot_event     (push, when this player is hit)
@@ -42,8 +44,8 @@ import cv2
 import numpy as np
 from aiohttp import web, WSMsgType
 
-from game_state import GameState, MAX_HP
-from hand_detector import HandDetector, INDEX_MCP, INDEX_TIP
+from game_state import CLAP_MATCH_S, GameState, MAX_HP
+from hand_detector import HandDetector, INDEX_MCP, INDEX_TIP, ClapTracker, own_palms, shooting_hand
 from tag_detector import TagDetector, pick_aimed_tag
 
 logging.basicConfig(
@@ -59,11 +61,12 @@ TAGS_DIR   = Path(__file__).parent / 'tags'   # written by gen_tags.py
 CERT_DIR   = Path(__file__).parent / 'certs'  # self-signed HTTPS cert (gitignored)
 HTTPS_PORT = int(os.environ.get('HTTPS_PORT', PORT + 1))
 
-POSE_ARMED_THRESHOLD = 0.75   # yellow reticle; firing needs hand['ready'] (see hand_detector)
-# Detection flickers frame to frame (blur, distance), so a shot fires if the
-# ready pose and an aim-on-tag each happened within this window — not
-# necessarily in the same frame.  Tags that drop out are also remembered at
-# their last position for TAG_MEMORY_S so the finger can still aim at them.
+POSE_ARMED_THRESHOLD = 0.75   # pose bar colour on the phone (information only)
+# One-handed finger gun (game_state.Gun): while loaded it fires on any frame
+# with a finger-gun pose aimed at a tag, until one hits; then clap to reload.
+# Detection flickers frame to frame (blur, distance), so the pose and the aim
+# each still count for TRIGGER_WINDOW_S (not necessarily the same frame), and
+# tags that drop out are remembered at their last position for TAG_MEMORY_S.
 TRIGGER_WINDOW_S     = 0.8
 TAG_MEMORY_S         = 0.8
 MAX_FRAME_BYTES      = 2 * 1024 * 1024
@@ -113,26 +116,28 @@ def _process_frame(jpeg_bytes: bytes, remembered: list[dict]) -> dict:
     fresh_ids = {t['id'] for t in fresh}
     tags = fresh + [{**t, 'stale': True} for t in remembered if t['id'] not in fresh_ids]
 
-    # The index finger aims: pick the tag along the knuckle -> fingertip ray.
-    # With two hands in view (e.g. one holding the target), use the hand that is
-    # the best finger gun, preferring one that is actually aimed at a tag.
-    best, best_key, tag = hand_result, None, None
-    for hand in hand_result['hands']:
-        lms     = hand['landmarks']
+    # One hand shoots: the one closest to the camera (biggest in the frame).
+    # Its index finger aims along the knuckle -> fingertip ray.
+    hands = hand_result['hands']
+    shooter = shooting_hand(hands, w, h)
+    tag = None
+    if shooter and shooter['criteria']['index_extended']:
+        lms     = shooter['landmarks']
         knuckle = (lms[INDEX_MCP][0] * w, lms[INDEX_MCP][1] * h)
         tip     = (lms[INDEX_TIP][0] * w, lms[INDEX_TIP][1] * h)
-        aimed   = pick_aimed_tag(tags, knuckle, tip)
-        key     = (hand['ready'], aimed is not None, hand['confidence'])
-        if best_key is None or key > best_key:
-            best, best_key, tag = hand, key, aimed
+        tag     = pick_aimed_tag(tags, knuckle, tip)
 
     return {
-        'pose':      best['confidence'],
-        'armed':     best['armed'],
-        'ready':     best['ready'],
+        'pose':      shooter['confidence'] if shooter else 0.0,
+        'armed':     bool(shooter and shooter['armed']),
+        'ready':     bool(shooter and shooter['ready']),
+        'shooting':  shooter is not None,
+        'own_palms': own_palms(hands, w, h),   # 2 entries = both your hands: no shooting
+        'n_hands':   len(hands),
         'detected':  hand_result['detected'],
-        'landmarks': best['landmarks'],
-        'criteria':  best['criteria'],
+        'landmarks': shooter['landmarks'] if shooter else None,
+        'other_landmarks': [hd['landmarks'] for hd in hands if hd is not shooter],
+        'criteria':  shooter['criteria'] if shooter else {},
         'tag':       tag,
         'fresh_tags': fresh,
         'tags_seen': [{'id': t['id'], 'corners': t['corners'], 'stale': t.get('stale', False)}
@@ -143,6 +148,19 @@ def _process_frame(jpeg_bytes: bytes, remembered: list[dict]) -> dict:
 
 
 # ── Broadcast helpers ─────────────────────────────────────────────────────────
+
+async def _settle_claps():
+    """Reload whoever's clap it was (the phone that heard it loudest)."""
+    now = time.monotonic()
+    for clapper, others in game.claps.settle(now):
+        p = game.players.get(clapper)
+        if p and p.alive and p.gun.state(now) == 'reload':
+            p.gun.update(True, now)
+            log.info(f'CLAP  P{clapper} reloaded (mic)'
+                     + (f'  — also heard by P{", P".join(map(str, others))}, ignored there' if others else ''))
+        elif others:
+            log.info(f'CLAP  by P{clapper} (no reload needed) — not counted for P{", P".join(map(str, others))}')
+
 
 async def _broadcast_host(data: dict):
     dead = set()
@@ -164,8 +182,9 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
     loop   = asyncio.get_event_loop()
     last_diag = last_dump = 0.0
     tag_memory: dict[int, tuple[dict, float]] = {}   # tag id -> (tag, last seen)
-    last_ready_at = 0.0                              # last frame with a ready pose
+    last_ready_at = 0.0                              # last frame with a finger-gun pose
     last_aim: tuple[int, float] | None = None        # (tag id, when) last aimed at
+    claps = ClapTracker()                            # clap = reload, seen across frames
 
     log.info(f'Phone connected from {request.remote}')
 
@@ -187,6 +206,19 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     player = await game.add_player(pid, team, ws)
                     await ws.send_json({'type': 'registered', 'player_id': pid, 'team': team})
                     await _broadcast_host({'type': 'player_joined', 'player': player.to_dict()})
+
+                # The phone's microphone heard a clap.  Other phones nearby hear
+                # the same clap; wait CLAP_MATCH_S for their reports, then it
+                # belongs to the loudest (see ClapReferee / _settle_claps).
+                # Camera claps are detected in the frame loop below.
+                elif data.get('type') == 'mic' and player:
+                    log.info(f'MIC   P{player.player_id}: {str(data.get("state"))[:60]}')
+
+                elif data.get('type') == 'clap' and player:
+                    peak = float(data.get('peak', 0.0))
+                    log.info(f'clap heard by P{player.player_id}  peak={peak:.2f}')
+                    game.claps.heard(player.player_id, peak, time.monotonic())
+                    loop.call_later(CLAP_MATCH_S + 0.02, lambda: asyncio.ensure_future(_settle_claps()))
                 continue
 
             # ── Binary: JPEG frame ────────────────────────────────────────
@@ -212,6 +244,11 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
 
                 for t in det['fresh_tags']:
                     tag_memory[t['id']] = (t, now)
+                # One-handed only: your second hand in view cancels any pose/aim
+                # in progress, so the two hands can't combine into a shot.
+                two_hands = len(det['own_palms']) >= 2
+                if two_hands:
+                    last_ready_at, last_aim = 0.0, None
                 if det['ready']:
                     last_ready_at = now
                 if tag:
@@ -220,14 +257,26 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 aim_ready  = last_aim is not None and now - last_aim[1] <= TRIGGER_WINDOW_S
                 target_id  = last_aim[0] if aim_ready else None
 
+                clapped = claps.update(det['own_palms'], now)
+                reloading = player.gun.state(now) == 'reload'
+                player.gun.update(clapped, now)
+                if clapped and reloading:
+                    log.info(f'CLAP  P{player.player_id} reloaded  own={len(det["own_palms"])} gap={claps.last_gap}')
+                gun = player.gun.state(now)   # 'reload' | 'arming' | 'ready'
+
                 shot_event = None
 
                 # Why this frame did / didn't fire — shown on the phone and logged.
+                # A loaded gun fires on every aimed finger-gun frame until one hits.
                 if not player.alive:
                     status = 'dead'
+                elif gun != 'ready':
+                    status = gun
+                elif two_hands:
+                    status = 'two_hands'
                 elif fire_ready and aim_ready:
-                    shot_event, status = await game.process_shot(player.player_id, target_id)
-                elif not det['detected']:
+                    shot_event, status = await game.process_shot(player.player_id, target_id, now)
+                elif not det['shooting']:
                     status = 'no_hand'
                 elif not det['tags_seen']:
                     status = 'no_tag_visible'
@@ -235,22 +284,25 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     status = 'not_aimed'
                 else:
                     status = 'pose_not_ready'
+                gun = player.gun.state(now)   # a hit just emptied it
 
-                if DEBUG_FRAME_DIR and now - last_dump >= 0.5:
+                # ~2 frames/s, but EVERY frame while waiting for a reload clap
+                if DEBUG_FRAME_DIR and (status == 'reload' or now - last_dump >= 0.5):
                     last_dump = now
                     name = f'p{player.player_id}_{time.strftime("%H%M%S")}_{int(now * 1000) % 1000:03d}_{status}.jpg'
                     Path(DEBUG_FRAME_DIR, name).write_bytes(msg.data)
 
-                if status == 'hit' or now - last_diag >= DIAG_LOG_INTERVAL:
+                # Every frame while waiting for a reload clap (to tune clap detection)
+                if status in ('hit', 'reload') or now - last_diag >= DIAG_LOG_INTERVAL:
                     last_diag = now
-                    failing = [k for k, v in det['criteria'].items() if not v]
                     seen = [f'{t["id"]}{"(mem)" if t["stale"] else ""}' for t in det['tags_seen']]
-                    log.info(f'P{player.player_id}  status={status:<18} pose={pose:.1f} '
-                             f'failing={failing}  tags_seen={seen}  '
+                    log.info(f'P{player.player_id}  status={status:<18} gun={gun:<7} '
+                             f'hands={det["n_hands"]} own={len(det["own_palms"])} gap={claps.last_gap}  '
+                             f'tags_seen={seen}  '
                              f'aimed={tag["id"] if tag else None}  window_target={target_id}')
 
                 if shot_event:
-                    log.info(f'SHOT  P{player.player_id} -> P{target_id}  (pose={pose:.2f})')
+                    log.info(f'SHOT  P{player.player_id} -> P{target_id}')
                     victim = game.players.get(target_id)
                     if victim and victim.ws and not victim.ws.closed:
                         try:
@@ -265,11 +317,15 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     'armed':         armed,
                     'aiming_tag_id': tag['id'] if tag else target_id,
                     'landmarks':     det['landmarks'],
+                    'other_landmarks': det['other_landmarks'],
                     'criteria':      det['criteria'],
                     'tags_seen':     det['tags_seen'],
                     'status':        status,
+                    'gun':           gun,
+                    'arming_left':   round(player.gun.arming_left(now), 1),
+                    'clapped':       clapped,
                     'fire_ready':    fire_ready,
-                    'cooldown_left': round(player.cooldown_left(), 1),
+                    'n_hands':       det['n_hands'],
                     'kills':         player.kills,
                     'hp':            player.hp,
                     'max_hp':        MAX_HP,

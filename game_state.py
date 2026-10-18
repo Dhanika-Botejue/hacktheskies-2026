@@ -2,7 +2,8 @@
 game_state.py  (simplified — shoot-only)
 =========================================
 Tracks players and processes shots.  Each player has MAX_HP hit points;
-each hit takes one, and the player dies when they reach zero.
+each hit takes one, and the player dies when they reach zero.  Shooting is
+one-handed; after every hit the gun reloads with a clap (see Gun).
 """
 from __future__ import annotations
 
@@ -14,9 +15,44 @@ from typing import Dict, Optional, Any, Tuple
 
 log = logging.getLogger('hacktheskies.state')
 
-SHOT_COOLDOWN  = 2.5    # seconds between shots by the same player
-MAX_HP         = 3      # hits it takes to kill a player
-FRIENDLY_FIRE  = False
+MAX_HP           = 3      # hits it takes to kill a player
+FRIENDLY_FIRE    = False
+ARM_DELAY_S      = 1.0    # wait after a reload clap before the gun fires again
+CLAP_MATCH_S     = 0.25   # clap reports from different phones this close together = one clap
+
+
+@dataclass
+class Gun:
+    """
+    One-handed gun.  While loaded it fires on every frame that aims at a tag,
+    until a shot actually hits (misses don't empty it).  After a hit it is
+    empty until the camera sees a clap (both hands together), and then fires
+    again ARM_DELAY_S later.  Starts loaded and ready; respawn resets it.
+    """
+    loaded: bool = True
+    loaded_at: float = float('-inf')
+
+    def update(self, clapped: bool, now: float) -> None:
+        if clapped and not self.loaded:
+            self.loaded, self.loaded_at = True, now
+
+    def arming_left(self, now: float) -> float:
+        return max(0.0, ARM_DELAY_S - (now - self.loaded_at))
+
+    def ready(self, now: float) -> bool:
+        return self.loaded and self.arming_left(now) == 0.0
+
+    def state(self, now: float) -> str:
+        """'reload' (clap to reload) | 'arming' (just reloaded) | 'ready'"""
+        if not self.loaded:
+            return 'reload'
+        return 'ready' if self.ready(now) else 'arming'
+
+    def fired(self) -> None:
+        self.loaded = False
+
+    def reset(self) -> None:
+        self.loaded, self.loaded_at = True, float('-inf')
 
 
 @dataclass
@@ -26,24 +62,15 @@ class Player:
     alive: bool = True
     hp: int = MAX_HP
     respawn_at: float = 0.0
-    last_shot_at: float = 0.0
     kills: int = 0
     deaths: int = 0
+    gun: Gun = field(default_factory=Gun)
     ws: Any = field(default=None, repr=False)
-
-    def can_shoot(self) -> bool:
-        return self.alive and self.cooldown_left() == 0.0
-
-    def cooldown_left(self) -> float:
-        return max(0.0, SHOT_COOLDOWN - (time.time() - self.last_shot_at))
 
     def seconds_until_respawn(self) -> float:
         if self.alive:
             return 0.0
         return max(0.0, self.respawn_at - time.time())
-
-    def mark_shot(self):
-        self.last_shot_at = time.time()
 
     def die(self, respawn_secs: float = 10.0):
         self.alive = False
@@ -55,6 +82,7 @@ class Player:
         self.alive = True
         self.hp = MAX_HP
         self.respawn_at = 0.0
+        self.gun.reset()
         log.info(f'Player {self.player_id} respawned')
 
     def check_auto_respawn(self):
@@ -75,12 +103,41 @@ class Player:
         }
 
 
+class ClapReferee:
+    """
+    Decides whose clap it was.  Every phone reports every clap its microphone
+    hears, with how loud it was.  One real clap is heard by all phones nearby at
+    about the same moment, and loudest by the clapper's own phone (right next to
+    their hands), so reports within CLAP_MATCH_S of each other are grouped and
+    the clap belongs to the loudest reporter only.
+    """
+
+    def __init__(self):
+        self.pending: list[tuple[float, int, float]] = []   # (time, player_id, peak)
+
+    def heard(self, player_id: int, peak: float, now: float) -> None:
+        self.pending.append((now, player_id, peak))
+
+    def settle(self, now: float) -> list[tuple[int, list[int]]]:
+        """Resolve claps whose window has closed: [(clapper, [other phones that heard it])]."""
+        self.pending.sort()
+        decided = []
+        while self.pending and now - self.pending[0][0] >= CLAP_MATCH_S:
+            t0 = self.pending[0][0]
+            group = [c for c in self.pending if c[0] - t0 <= CLAP_MATCH_S]
+            self.pending = [c for c in self.pending if c[0] - t0 > CLAP_MATCH_S]
+            clapper = max(group, key=lambda c: c[2])[1]
+            decided.append((clapper, sorted({c[1] for c in group} - {clapper})))
+        return decided
+
+
 class GameState:
     def __init__(self):
         self.players: Dict[int, Player] = {}
         self.game_active: bool = False
         self.game_start:  float = 0.0
         self._lock = asyncio.Lock()
+        self.claps = ClapReferee()
 
     # ── Player management ────────────────────────────────────────────────
 
@@ -104,26 +161,30 @@ class GameState:
 
     # ── Shot resolution ──────────────────────────────────────────────────
 
-    async def process_shot(self, shooter_id: int, target_id: int) -> Tuple[Optional[dict], str]:
+    async def process_shot(self, shooter_id: int, target_id: int,
+                           now: Optional[float] = None) -> Tuple[Optional[dict], str]:
         """Returns (shot_event or None, reason).  reason is 'hit' on success,
-        otherwise why the shot was rejected — shown on the shooter's screen."""
+        otherwise why the shot was rejected — shown on the shooter's screen.
+        A rejected shot leaves the gun loaded (it keeps firing); a hit empties it.
+        now: the clock the shooter's gun was updated with (server: time.monotonic)."""
+        now = time.monotonic() if now is None else now
         async with self._lock:
             shooter = self.players.get(shooter_id)
             target  = self.players.get(target_id)
             if not shooter:
                 return None, 'not_registered'
-            if not target:
-                return None, 'target_not_in_game'
             if not shooter.alive:
                 return None, 'dead'
-            if not shooter.can_shoot():
-                return None, 'cooldown'
+            if not shooter.gun.ready(now):
+                return None, shooter.gun.state(now)    # 'reload' | 'arming'
+            if not target:
+                return None, 'target_not_in_game'
             if not target.alive:
                 return None, 'target_dead'
             if not FRIENDLY_FIRE and shooter.team == target.team:
                 return None, 'same_team'
 
-            shooter.mark_shot()
+            shooter.gun.fired()
             target.hp -= 1
             killed = target.hp <= 0
             if killed:
@@ -162,6 +223,7 @@ class GameState:
                 p.respawn_at = 0.0
                 p.kills      = 0
                 p.deaths     = 0
+                p.gun.reset()
             log.info('Game started')
 
     async def stop_game(self) -> dict:

@@ -77,6 +77,11 @@
     #dead p{opacity:.6;font-size:1rem}
     #rtimer{font-size:4rem;font-weight:900;font-variant-numeric:tabular-nums}
 
+    /* "Tap to turn on sound + mic" (browsers need a tap before any audio) */
+    #tap-audio{display:none;position:absolute;left:12px;right:12px;bottom:96px;z-index:30;
+               background:#f59e0b;color:#000;font-weight:700;font-size:1.1rem;
+               padding:14px;border-radius:12px;text-align:center}
+    #tap-audio.show{display:block}
     /* Idle overlay */
     #idle{display:none;position:absolute;inset:0;background:rgba(0,0,0,.75);
           align-items:center;justify-content:center;font-size:1.3rem;
@@ -90,7 +95,8 @@
 <div id="setup">
   <h1>🔫 HackTheSkies</h1>
   <p>Strap your phone to your chest, rear camera facing out.<br>
-     Aim with a thumbs-up + index finger pointed at the target's tag.</p>
+     Make a finger gun with one hand and point it at a tag.<br>
+     After every hit, clap loudly near the phone to reload (allow the microphone).</p>
 
   <label>Your bib number (player ID 1–99)</label>
   <input id="pid" type="number" min="1" max="99" placeholder="e.g. 7"/>
@@ -111,11 +117,13 @@
 <div id="game">
   <video id="vid" autoplay playsinline muted></video>
   <canvas id="ov"></canvas>
+  <div id="tap-audio">🔊 Tap here to turn on sound + clap mic</div>
 
   <div id="hud">
     <span id="pid-label">P—</span>
     <span><span id="ws-dot"></span><span id="ws-lbl">connecting</span></span>
     <span id="score-hud">—</span>
+    <span id="mic-lbl">🎤 off</span>
   </div>
 
   <!-- SVG crosshair reticle -->
@@ -164,6 +172,8 @@ let sending   = false;
 let playerId  = null;
 let team      = null;
 let alive     = true;
+let lastGun   = null;   // gun state last frame, to play reload/ready sounds on change
+let inGame    = null;   // null = not known yet (joined mid-game: no start sound)
 let respawnAt = null;
 
 // ─── Elements ─────────────────────────────────────────────────────────────
@@ -185,6 +195,8 @@ const $hit      = document.getElementById('hit');
 const $wsDot    = document.getElementById('ws-dot');
 const $wsLbl    = document.getElementById('ws-lbl');
 const $score    = document.getElementById('score-hud');
+const $micLbl   = document.getElementById('mic-lbl');
+const $tapAudio = document.getElementById('tap-audio');
 const $pidLbl   = document.getElementById('pid-label');
 
 // ─── Setup ────────────────────────────────────────────────────────────────
@@ -205,15 +217,25 @@ document.getElementById('go').addEventListener('click', async () => {
   const srv = $srvIn.value.trim();
   if (!playerId || !srv) { alert('Fill in all fields'); return; }
   unlockAudio();
+  // Sound check: a beep on Join if audio works.  (Auto-join via ?pid= runs before
+  // the sound code below has loaded, so this must not be allowed to throw.)
+  try { sfx.ready(); } catch {}
   try { localStorage.setItem('hts-setup', JSON.stringify({ pid: playerId, team, srv })); } catch {}
 
+  // Camera + microphone (the mic hears reload claps).  Raw audio: echo
+  // cancellation / noise suppression would soften exactly the sharp clap we want.
+  // If the mic is refused, play on with the camera only (camera claps still work).
+  const video = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } };
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
+      video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
     });
-  } catch (e) { alert('Camera access denied: ' + e.message); return; }
+  } catch {
+    try { stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); }
+    catch (e) { alert('Camera access denied: ' + e.message); return; }
+  }
+  startClapMic(stream);
 
   $vid.srcObject = stream;
   await new Promise(r => $vid.onloadedmetadata = r);
@@ -223,6 +245,9 @@ document.getElementById('go').addEventListener('click', async () => {
   renderHp(3, 3);
 
   connectWS(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${srv}/ws/phone`);
+  // Auto-join (page refresh) has had no tap yet, so audio + mic can't start:
+  // show the "tap to turn on" banner until it's running
+  setTimeout(checkAudioReady, 500);
 });
 
 if (params.get('pid') && params.get('team')) document.getElementById('go').click();
@@ -235,6 +260,7 @@ function connectWS(url) {
   ws.onopen = () => {
     setWS('ok', 'connected');
     ws.send(JSON.stringify({ type: 'register', player_id: playerId, team }));
+    ws.send(JSON.stringify({ type: 'mic', state: micState }));
     startSendLoop();
   };
   ws.onclose = () => {
@@ -296,6 +322,11 @@ function handleMessage(d) {
   if (d.type === 'frame_result') {
     $idle.classList.remove('show');
 
+    // Players can't see the screen (phone on a lanyard): every state change
+    // they need to know about is a sound.
+    if (inGame === false) sfx.start();             // idle -> playing
+    else if (!alive && d.alive) sfx.respawn();      // back in after being downed
+    inGame    = true;
     alive     = d.alive;
     respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;
     if (d.hp !== undefined) renderHp(d.hp, d.max_hp);
@@ -315,7 +346,12 @@ function handleMessage(d) {
 
     // Reticle: red only when a shot would actually fire this frame
     const hasTarget = d.aiming_tag_id !== null;
-    $rtcl.className = (d.fire_ready && hasTarget) ? 'locked' : d.armed ? 'armed' : '';
+    $rtcl.className = d.gun !== 'ready' ? '' : (d.fire_ready && hasTarget) ? 'locked' : d.armed ? 'armed' : '';
+
+    // Gun sounds: you can't see the screen with the phone on your chest
+    if (alive && lastGun === 'reload' && d.gun !== 'reload') sfx.reload();
+    if (d.gun === 'ready' && lastGun === 'arming') sfx.ready();
+    lastGun = d.gun;
 
     // Status line: says exactly why this frame did / didn't fire
     const [msg, cls] = statusText(d);
@@ -334,7 +370,9 @@ function handleMessage(d) {
     if (!alive) $dead.classList.add('show');
     else        $dead.classList.remove('show');
 
-    drawOverlay(d.landmarks, d.tags_seen, d.aiming_tag_id, d.frame_w, d.frame_h);
+    // Only the shooting hand is drawn, plus the others while reloading (to line up the clap)
+    drawOverlay(d.landmarks, d.tags_seen, d.aiming_tag_id, d.frame_w, d.frame_h,
+                d.gun === 'reload' ? d.other_landmarks : []);
   }
 
   else if (d.type === 'shot_event') {
@@ -353,6 +391,8 @@ function handleMessage(d) {
   }
 
   else if (d.type === 'idle') {
+    if (inGame === true) sfx.over();                // playing -> stopped by the host
+    inGame = false;
     $idle.classList.add('show');
   }
 
@@ -370,11 +410,13 @@ function statusText(d) {
   switch (d.status) {
     case 'hit':                return [`💥 HIT Player ${tgt}!`, 'hit'];
     case 'dead':               return ['💀 You are down', ''];
-    case 'no_hand':            return [ids ? `No hand seen · tags in view: ${ids}` : 'No hand seen · no tags in view', ''];
-    case 'no_tag_visible':     return ['✋ Hand OK · no tag detected in view', ''];
-    case 'not_aimed':          return [`👀 Tag ${ids} in view · point your finger at it`, 'warn'];
-    case 'pose_not_ready':     return [`🎯 Aiming at P${tgt} · point your index, curl middle/ring to fire`, 'warn'];
-    case 'cooldown':           return [`🎯 P${tgt} · reloading ${d.cooldown_left}s`, 'warn'];
+    case 'reload':             return [`👏 Hit! Clap to reload (${d.n_hands ?? 0} hand${d.n_hands === 1 ? '' : 's'} seen)`, 'warn'];
+    case 'arming':             return [`⏳ Reloaded · ready in ${d.arming_left}s`, 'warn'];
+    case 'no_hand':            return ['✋ No hand seen · hold your finger gun in view', ''];
+    case 'two_hands':          return ['✋✋ Shoot with one hand · the second hand is only for clapping', 'warn'];
+    case 'no_tag_visible':     return ['🔫 Ready · no tag in view', ''];
+    case 'not_aimed':          return [`🔫 Ready · tag ${ids} in view, point at it`, 'warn'];
+    case 'pose_not_ready':     return [`🎯 Aiming at P${tgt} · index out, curl middle/ring to fire`, 'warn'];
     case 'target_dead':        return [`🎯 P${tgt} is already down`, 'warn'];
     case 'same_team':          return [`🎯 P${tgt} is on your team`, 'warn'];
     case 'target_not_in_game': return [`🎯 P${tgt} hasn't joined the game`, 'warn'];
@@ -395,19 +437,47 @@ function showHit(targetId, killed, targetHp) {
 }
 
 // ─── Sounds ───────────────────────────────────────────────────────────────
-// Synthesised with Web Audio (no files).  Browsers only allow audio after a
-// tap, so unlockAudio() runs on the Join button and on the first touch.
-let audioCtx = null;
+// Synthesised with Web Audio (no files).  The phone hangs on a lanyard out of
+// sight, so these are the player's only feedback: long and loud enough to hear
+// while running.  Everything goes through a compressor (evens out the peaks so
+// the whole mix can be turned up) and sits mostly in 300-4000 Hz, the range
+// small phone speakers reproduce best.  Browsers only allow audio after a tap,
+// so unlockAudio() runs on the Join button and on the first touch.
+let audioCtx = null, master = null, noiseBuf = null;
+let sfxBusyUntil = 0;   // audioCtx time until which our own sounds are playing (mic ignores them)
 function unlockAudio() {
+  // iPhone: without this, the ring/silent switch mutes Web Audio (Safari 16.4+)
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
   try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = audioCtx.createDynamicsCompressor();
+      comp.threshold.value = -24; comp.knee.value = 6; comp.ratio.value = 8;
+      comp.attack.value = 0.002;  comp.release.value = 0.15;
+      const out = audioCtx.createGain();
+      out.gain.value = 2.5;                         // make-up gain after the compressor
+      comp.connect(out).connect(audioCtx.destination);
+      master = comp;
+      noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);  // 1 s white noise
+      const ch = noiseBuf.getChannelData(0);
+      for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    }
     if (audioCtx.state === 'suspended') audioCtx.resume();
+    attachClapMic();   // the mic stream may have arrived before the audio context
   } catch {}
 }
-document.addEventListener('pointerdown', unlockAudio, { once: true });
+// Any tap (re)starts audio; the banner goes away once audio is really running
+document.addEventListener('pointerdown', () => { unlockAudio(); setTimeout(checkAudioReady, 300); });
 
-// One note: frequency glides from f0 to f1, starting `at` seconds from now
-function tone(f0, f1, at, dur, type = 'sine', vol = 0.35) {
+function checkAudioReady() {
+  const running = audioCtx && audioCtx.state === 'running';
+  $tapAudio.classList.toggle('show', !running);
+  if (!running) reportMic('waiting for a tap');
+}
+
+// One note gliding f0 -> f1, starting `at` s from now.  hold = fraction of the
+// note held at full volume before it fades (0 = plucked/bell, 0.7 = sustained).
+function tone(f0, f1, at, dur, type = 'sine', vol = 0.5, hold = 0) {
   if (!audioCtx) return;
   const t = audioCtx.currentTime + at;
   const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
@@ -415,32 +485,180 @@ function tone(f0, f1, at, dur, type = 'sine', vol = 0.35) {
   osc.frequency.setValueAtTime(f0, t);
   osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
   gain.gain.setValueAtTime(0.0001, t);
-  gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+  gain.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+  if (hold > 0) gain.gain.setValueAtTime(vol, t + dur * hold);
   gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  osc.connect(gain).connect(audioCtx.destination);
+  osc.connect(gain).connect(master);
   osc.start(t); osc.stop(t + dur + 0.05);
+  sfxBusyUntil = Math.max(sfxBusyUntil, t + dur + 0.25);
+}
+
+// Filtered noise burst (gunshots, impacts, clicks); the filter sweeps f0 -> f1
+function noise(at, dur, filterType, f0, f1, vol = 0.6, q = 1) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime + at;
+  const src = audioCtx.createBufferSource(), filt = audioCtx.createBiquadFilter(), gain = audioCtx.createGain();
+  src.buffer = noiseBuf; src.loop = true;
+  filt.type = filterType; filt.Q.value = q;
+  filt.frequency.setValueAtTime(f0, t);
+  filt.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(filt).connect(gain).connect(master);
+  src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.05);
+  sfxBusyUntil = Math.max(sfxBusyUntil, t + dur + 0.25);
+}
+
+// A struck bell: a few inharmonic partials ringing out
+function bell(f, at, dur = 0.9, vol = 0.45) {
+  tone(f, f, at, dur, 'sine', vol);
+  tone(f * 2, f * 2, at, dur * 0.7, 'sine', vol * 0.5);
+  tone(f * 2.76, f * 2.76, at, dur * 0.5, 'sine', vol * 0.3);
+}
+
+function gunshot(at = 0) {
+  noise(at, 0.30, 'lowpass', 7000, 500, 1.0);            // crack + tail
+  noise(at, 0.07, 'bandpass', 2500, 1500, 0.9, 0.8);     // sharp snap
+  tone(180, 50, at, 0.25, 'sine', 0.9);                  // body
+}
+
+function impact(at = 0, big = false) {
+  noise(at, big ? 0.5 : 0.3, 'lowpass', 1500, 150, 1.0);
+  tone(240, 55, at, big ? 0.5 : 0.3, 'sine', 1.0);
+}
+
+function say(text, delayMs, rate = 1, pitch = 1) {
+  if (audioCtx) sfxBusyUntil = Math.max(sfxBusyUntil, audioCtx.currentTime + delayMs / 1000 + 1.5);
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.volume = 1; u.rate = rate; u.pitch = pitch;
+    setTimeout(() => speechSynthesis.speak(u), delayMs);
+  } catch {}
 }
 
 const sfx = {
-  // You landed a hit: bright single ding
-  hit()    { tone(1568, 1568, 0, 0.35); tone(3136, 3136, 0, 0.2, 'sine', 0.1); },
-  // You killed someone: rising three-note bing
-  kill()   { tone(1047, 1047, 0, 0.15); tone(1319, 1319, 0.1, 0.15); tone(2093, 2093, 0.2, 0.5); },
-  // You got hit: sad falling two-note bing
-  hurt()   { tone(659, 622, 0, 0.25, 'triangle', 0.4); tone(523, 466, 0.22, 0.45, 'triangle', 0.4); },
-  // You died: descending "wah-wah" + a spoken "Downed"
+  // You landed a hit: gunshot, then a bright bell ringing out (~1 s)
+  hit()    { gunshot(); bell(1568, 0.12, 1.0, 0.5); },
+  // You killed someone: gunshot, then a rising fanfare (~1.4 s)
+  kill()   {
+    gunshot();
+    tone(1047, 1047, 0.15, 0.18, 'square', 0.22, 0.6);
+    tone(1319, 1319, 0.33, 0.18, 'square', 0.22, 0.6);
+    tone(1568, 1568, 0.51, 0.18, 'square', 0.22, 0.6);
+    tone(2093, 2093, 0.69, 0.75, 'square', 0.22, 0.5);
+    bell(2093, 0.69, 1.0, 0.35);
+  },
+  // Clap seen after a hit: gun reload — click, slide back, slam home (~0.5 s)
+  reload() {
+    noise(0,    0.035, 'highpass', 3000, 3000, 1.0);
+    noise(0.06, 0.22,  'bandpass', 900, 3500, 0.7, 2);
+    noise(0.34, 0.06,  'bandpass', 1800, 1200, 1.0, 1.5);
+    tone(320, 110, 0.34, 0.1, 'square', 0.45);
+  },
+  // 1 s after the reload: gun is live — two rising pings (~0.8 s)
+  ready()  { bell(1319, 0, 0.4, 0.45); bell(1760, 0.16, 0.65, 0.5); },
+  // You got hit: an impact thud, then a sad falling two-note (~1.4 s)
+  hurt()   {
+    impact();
+    tone(659, 587, 0.22, 0.45, 'triangle', 0.6, 0.6);
+    tone(523, 440, 0.65, 0.75, 'triangle', 0.6, 0.6);
+  },
+  // You died: a big impact, a spoken "Downed", then a long "wah-wah-wah-waah" (~3 s)
   downed() {
-    tone(392, 370, 0,    0.3, 'sawtooth', 0.2);
-    tone(370, 349, 0.3,  0.3, 'sawtooth', 0.2);
-    tone(349, 330, 0.6,  0.3, 'sawtooth', 0.2);
-    tone(330, 165, 0.9,  0.9, 'sawtooth', 0.2);
-    try {
-      const u = new SpeechSynthesisUtterance('Downed');
-      u.rate = 0.8; u.pitch = 0.6;
-      setTimeout(() => speechSynthesis.speak(u), 400);
-    } catch {}
+    impact(0, true);
+    say('Downed', 250, 0.85, 0.7);
+    tone(392, 370, 0.9,  0.42, 'sawtooth', 0.28, 0.7);
+    tone(370, 349, 1.32, 0.42, 'sawtooth', 0.28, 0.7);
+    tone(349, 330, 1.74, 0.42, 'sawtooth', 0.28, 0.7);
+    tone(330, 165, 2.16, 1.2,  'sawtooth', 0.28, 0.5);
+  },
+  // Respawned: a rising sweep into a bright chord, + "Back in" (~1.8 s)
+  respawn() {
+    tone(330, 1320, 0, 0.7, 'triangle', 0.5, 0.8);
+    bell(1047, 0.7, 1.0, 0.35); bell(1319, 0.7, 1.0, 0.3); bell(1568, 0.7, 1.0, 0.3);
+    say('Back in', 900);
+  },
+  // Host pressed Start: race-start beeps (beep, beep, beep, BEEEP) + "Go" (~2.6 s)
+  start()  {
+    tone(880, 880, 0,   0.25, 'square', 0.3, 0.8);
+    tone(880, 880, 0.6, 0.25, 'square', 0.3, 0.8);
+    tone(880, 880, 1.2, 0.25, 'square', 0.3, 0.8);
+    tone(1760, 1760, 1.8, 0.8, 'square', 0.3, 0.7);
+    say('Go', 1850, 1.1, 1.1);
+  },
+  // Host pressed Stop: a long falling horn + "Game over" (~2.5 s)
+  over()   {
+    tone(880, 220, 0, 1.6, 'sawtooth', 0.3, 0.5);
+    tone(440, 110, 0, 1.6, 'sawtooth', 0.2, 0.5);
+    say('Game over', 1700, 0.9, 0.9);
   },
 };
+
+// ─── Clap microphone (reload) ─────────────────────────────────────────────
+// A clap near the phone is a very loud, very short sound: a sharp peak far
+// above the room's background level.  Voices are smoother (a lower peak for
+// their average level), and claps or phones across the room are much quieter,
+// since sound falls off fast with distance.  The phone's own sound effects are
+// ignored while they play, so its gunshot can't reload it.
+const CLAP_MIN_PEAK  = 0.5;   // peak loudness, 1.0 = the mic's maximum (0.5: clap right next to the phone)
+const CLAP_MIN_CREST = 4;     // peak / average level over ~45 ms: how sharp the sound is
+const CLAP_OVER_BG   = 8;     // peak / the room's background level
+const CLAP_GAP_MS    = 400;   // one clap per this long
+let micStream = null, micAnalyser = null, micBuf = null, micBg = 0.01, lastClapAt = -Infinity;
+let micState = 'off', micMax = 0, micTicks = 0;
+
+// Mic status on the test screen and in the server log (to debug phones you can't see)
+function reportMic(state) {
+  if (state === micState) return;
+  micState = state;
+  if (state !== 'listening') $micLbl.textContent = `🎤 ${state}`;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'mic', state }));
+}
+
+function startClapMic(stream) {
+  if (!stream.getAudioTracks().length) { reportMic('blocked (no mic permission)'); return; }
+  micStream = stream;
+  attachClapMic();
+}
+
+function attachClapMic() {
+  if (micAnalyser || !micStream || !audioCtx) return;
+  try {
+    const src = audioCtx.createMediaStreamSource(micStream);
+    micAnalyser = audioCtx.createAnalyser();
+    micAnalyser.fftSize = 2048;                     // ~45 ms of audio per look
+    micBuf = new Float32Array(micAnalyser.fftSize);
+    const sink = audioCtx.createGain();
+    sink.gain.value = 0;                             // keeps the graph running, silently
+    src.connect(micAnalyser).connect(sink).connect(audioCtx.destination);
+    setInterval(listenForClap, 25);
+    reportMic('listening');
+  } catch (e) { reportMic('error: ' + e.message); }
+}
+
+function listenForClap() {
+  micAnalyser.getFloatTimeDomainData(micBuf);
+  let peak = 0, sum = 0;
+  for (const v of micBuf) { const a = Math.abs(v); if (a > peak) peak = a; sum += v * v; }
+  const rms = Math.sqrt(sum / micBuf.length);
+  const now = performance.now();
+  // Live meter (test screen): loudest peak in the last 0.5 s vs the clap cut-off
+  micMax = Math.max(micMax, peak);
+  if (++micTicks % 20 === 0) {
+    $micLbl.textContent = `🎤 ${micMax.toFixed(2)}${micMax >= CLAP_MIN_PEAK ? ' ✓' : ''} / ${CLAP_MIN_PEAK}`;
+    micMax = 0;
+  }
+  const clap = audioCtx.currentTime >= sfxBusyUntil && peak >= CLAP_MIN_PEAK
+               && peak >= CLAP_MIN_CREST * rms && peak >= CLAP_OVER_BG * micBg
+               && now - lastClapAt > CLAP_GAP_MS;
+  if (!clap) { micBg = micBg * 0.98 + rms * 0.02; return; }   // slowly follow the room's level
+  lastClapAt = now;
+  $shotLog.textContent = `👏 clap heard (peak ${peak.toFixed(2)})  ` + new Date().toLocaleTimeString();
+  // Report every clap with its loudness, even when not reloading: the server
+  // gives each clap to the phone that heard it loudest (the clapper's), so
+  // someone else's clap next to you doesn't reload you.
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'clap', peak }));
+}
 
 // ─── Hit points ───────────────────────────────────────────────────────────
 function renderHp(hp, max) {
@@ -460,7 +678,7 @@ function triggerFlash(colour, msg) {
 // Draws hand skeleton dots + aim ray + tag bounding box.
 // The <video> uses object-fit:cover, so map frame coords through the same
 // scale + centre-crop the browser applies, or the overlay drifts off the video.
-function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH) {
+function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
   const aimed = (tagsSeen || []).find(t => t.id === aimedId);
   const tagCorners = aimed ? aimed.corners : null;
   ctx.clearRect(0, 0, $ov.width, $ov.height);
@@ -470,6 +688,17 @@ function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH) {
   const ox = (w - fw * s) / 2, oy = (h - fh * s) / 2;
   const px = ([x, y]) => [ox + x * s, oy + y * s];           // camera pixels -> canvas
   const nx = ([x, y]) => px([x * fw, y * fh]);               // normalised    -> canvas
+
+  // Other hands (not the shooting hand): dots only
+  ctx.fillStyle = 'rgba(96,165,250,0.85)';
+  for (const hand of otherHands || []) {
+    for (const lm of hand) {
+      const [x, y] = nx(lm);
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
   // Hand skeleton (landmarks are normalised 0-1)
   if (landmarks) {

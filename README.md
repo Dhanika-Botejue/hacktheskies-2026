@@ -46,23 +46,44 @@ All devices must be on the same Wi-Fi network.
 
 ```
 pose ≥ 0.75  →  reticle turns yellow ("armed")
-index out + middle OR ring tucked             ┐  both within the last
-index finger points roughly at a player tag   ┘  0.8 s  →  SHOT FIRED
+finger gun (index out + middle OR ring tucked)  ┐  both within
+index finger points roughly at a player tag     ┘  0.8 s   →  fires (every frame)
+first real hit                                  →  gun empty
+clap (both hands seen together)                 →  reloaded, fires again 1 s later
 ```
 
-Detection flickers frame to frame (blur, distance), so the pose and the aim don't
-have to land in the same frame (`TRIGGER_WINDOW_S` in `server.py`), and a tag that
-drops out is remembered at its last position for `TAG_MEMORY_S`. The thumb and pinky
-are shown on the phone but not required (`ready_to_fire` in `hand_detector.py`) —
-they read noisily when the hand is edge-on to the camera.
+One-handed only. Your hands = the closest (biggest) hand in the frame, plus a second
+of similar size (`PAIR_SIZE_RATIO`); hands too small to be yours are ignored
+(`OWN_HAND_MIN_PALM`), so other players can't shoot or reload for you. With one of
+your hands in view, it shoots. With both in view nothing fires, and any pose/aim in
+progress is cancelled: the second hand only comes in to clap. Misses (teammate, a player
+already down) don't empty the gun; only a hit does. The gun is `game_state.Gun`
+(`ARM_DELAY_S`).
+
+Reload claps are heard by the phone's **microphone** (`listenForClap` in
+`static/phone.html`): a loud, sharp peak well above the room's background level
+(`CLAP_MIN_PEAK`, `CLAP_MIN_CREST`, `CLAP_OVER_BG`), ignored while the phone's own
+sounds play; the phone then sends `{"type":"clap"}`. The camera can also see a clap
+(backup, either one reloads) — on camera alone most claps were missed, because
+pressed palms read as one hand and the clap itself is motion-blurred. Camera claps
+are detected across frames by `hand_detector.ClapTracker`:
+two hands close together, or two hands approaching that then merge into one hand or
+blur out within 0.5 s (pressed palms often read as one hand). Tune with
+`CLAP_MAX_PALMS` / `CLAP_NEAR_PALMS` / `CLAP_WINDOW_S`. While a player is waiting to
+reload, the server logs every frame (`hands=`, `own=`, `gap=`) to show why a clap
+did or didn't register.
+
+Detection flickers frame to frame (blur, distance), so an aim at a tag still counts
+for `TRIGGER_WINDOW_S` (`server.py`), and a tag that drops out is remembered at its
+last position for `TAG_MEMORY_S`.
 
 Aiming: a 2D ray from the index knuckle through the fingertip is cast across the
 frame; the player tag closest to that ray (relative to its on-screen size) is the
 target. If the finger points straight at the camera, the tag under the fingertip wins.
 Tune `AIM_TOLERANCE` / `AIM_MIN_FINGER_PX` in `tag_detector.py`.
 
-Criteria for "finger gun" — thumbs-up with the index finger out (each worth 0.2).
-Checked on 3D world landmarks, so any hand orientation works:
+Per-finger checks shown on the phone (the pose bar; only "index extended" gates
+aiming). Checked on 3D world landmarks, so any hand orientation works:
 - Index finger extended
 - Thumb raised away from the fist
 - Middle finger curled

@@ -72,6 +72,113 @@ CURL_GAP        = 0.08 # middle/ring must reach at least this much less than the
 THUMB_OUT_RATIO = 0.7  # thumb raised if |thumb tip->index knuckle| > this * palm length
 
 
+# One-handed play, clap to reload.
+# Only the wearer's own hands count: from a chest camera they are big in the
+# frame (palm ~15% of the frame at arm's length), while other players' hands
+# across the room are tiny.  Without this, an opponent's hand could become the
+# shooting hand, or an opponent clapping could reload your gun.
+OWN_HAND_MIN_PALM = 0.06   # palm size (see _palm) / shorter frame side
+# Clap detection (see ClapTracker).  Distances are between palm centres, in
+# palm-lengths.  Real claps rarely show as two touching hands in one frame:
+# pressed palms get merged into ONE hand, and a fast clap blurs both away.
+CLAP_MAX_PALMS    = 2.8    # two hands this close = clap (touching hands measured 2.3-2.7 in play)
+CLAP_NEAR_PALMS   = 4.5    # two hands this close = approaching...
+CLAP_WINDOW_S     = 0.8    # ...then merging into one hand / vanishing within this = clap
+# Your hands = the biggest (closest) hand, plus a second one only if it's at
+# least this fraction of its size: your two hands are about equally far from
+# the camera, while a noticeably smaller hand is further off (someone else's).
+PAIR_SIZE_RATIO   = 0.6
+_PALM = (0, 5, 9, 13, 17)   # wrist + the four finger knuckles
+
+
+def _palm(hand: dict, w: int, h: int) -> tuple[np.ndarray, float]:
+    """
+    (palm centre in pixels, palm size in pixels).
+
+    Size = the larger of the palm's length (wrist -> middle knuckle) and its
+    width (index -> pinky knuckle, scaled to match a length).  The length alone
+    collapses when the fingers point away from the camera — exactly how hands
+    look from a chest camera when pointing forward or clapping in front of you —
+    which made your own hands look tiny ("someone else's") and far apart.
+    """
+    lms = hand['landmarks']
+    pts = np.array([(lms[i][0] * w, lms[i][1] * h) for i in _PALM])
+    length = float(np.linalg.norm(pts[0] - pts[2]))
+    width  = float(np.linalg.norm(pts[1] - pts[4])) * 1.25
+    return pts.mean(axis=0), max(length, width)
+
+
+def own_hands(hands: list[dict], w: int, h: int) -> list[dict]:
+    """The wearer's hands, closest first: at most two, see PAIR_SIZE_RATIO."""
+    min_palm = OWN_HAND_MIN_PALM * min(w, h)
+    mine = sorted((hd for hd in hands if _palm(hd, w, h)[1] >= min_palm),
+                  key=lambda hd: -_palm(hd, w, h)[1])
+    if not mine:
+        return []
+    closest = _palm(mine[0], w, h)[1]
+    return [hd for hd in mine if _palm(hd, w, h)[1] >= PAIR_SIZE_RATIO * closest][:2]
+
+
+def shooting_hand(hands: list[dict], w: int, h: int) -> Optional[dict]:
+    """One-handed only: your hand, when exactly one of your hands is in view.
+    With both of yours in view there is no shooting hand — the second hand
+    only comes in to clap (reload)."""
+    mine = own_hands(hands, w, h)
+    return mine[0] if len(mine) == 1 else None
+
+
+def own_palms(hands: list[dict], w: int, h: int) -> list[tuple[tuple[float, float], float]]:
+    """(palm centre, palm length) in pixels for each of the wearer's hands."""
+    return [(tuple(map(float, c)), s) for c, s in (_palm(hd, w, h) for hd in own_hands(hands, w, h))]
+
+
+class ClapTracker:
+    """
+    Detects a clap across frames (one tracker per player).  A clap is:
+      - two hands within CLAP_MAX_PALMS of each other, or
+      - two hands within CLAP_NEAR_PALMS (approaching), and within CLAP_WINDOW_S
+        they merge into one hand near where they were meeting, or both vanish
+        (motion blur at the moment of the clap).
+    One hand simply leaving the frame doesn't count: the remaining hand is
+    still where it was, away from the meeting point.
+    """
+
+    def __init__(self):
+        self.near_at: Optional[float] = None
+        self.near_mid = (0.0, 0.0)
+        self.near_palm = 1.0
+        self.last_gap: Optional[float] = None   # for logging
+
+    def update(self, palms: list[tuple[tuple[float, float], float]], now: float) -> bool:
+        # palms = own_palms(): only your (at most two, closest) hands
+        if len(palms) >= 2:
+            (ca, sa), (cb, sb) = palms
+            size = max((sa + sb) / 2, 1e-6)
+            gap  = float(np.hypot(ca[0] - cb[0], ca[1] - cb[1])) / size
+            self.last_gap = round(gap, 2)
+            if gap <= CLAP_MAX_PALMS:
+                self.near_at = None
+                return True
+            if gap <= CLAP_NEAR_PALMS:
+                self.near_at, self.near_palm = now, size
+                self.near_mid = ((ca[0] + cb[0]) / 2, (ca[1] + cb[1]) / 2)
+            else:
+                self.near_at = None
+            return False
+
+        self.last_gap = None
+        if self.near_at is None or now - self.near_at > CLAP_WINDOW_S:
+            return False
+        if not palms:                     # both hands blurred out as they met
+            self.near_at = None
+            return True
+        (c, _), = palms                   # merged into one detection at the meeting point?
+        if np.hypot(c[0] - self.near_mid[0], c[1] - self.near_mid[1]) <= 1.2 * self.near_palm:
+            self.near_at = None
+            return True
+        return False
+
+
 def ready_to_fire(criteria: dict) -> bool:
     """
     Lenient on purpose: index out plus middle OR ring tucked.  In real play logs
@@ -91,8 +198,9 @@ class HandDetector:
     Parameters
     ----------
     model_path : path to hand_landmarker.task
-    num_hands  : max hands to detect.  2 by default so a second hand in view
-                 (e.g. one holding a phone) can't hide the shooting hand.
+    num_hands  : max hands to detect.  3 by default: your two hands (shooting +
+                 clapping) plus one spare, so another player's hand in view
+                 can't take a slot and hide one of yours.
     min_hand_detection_confidence
     min_hand_presence_confidence
     min_tracking_confidence
@@ -101,9 +209,11 @@ class HandDetector:
     def __init__(
         self,
         model_path: str | pathlib.Path = DEFAULT_MODEL,
-        num_hands: int = 2,
-        min_hand_detection_confidence: float = 0.6,
-        min_hand_presence_confidence: float = 0.5,
+        num_hands: int = 3,
+        # Lowish: a clapping hand moves fast and blurs.  False hands are filtered
+        # out later anyway (too small to be the wearer's, see own_hands).
+        min_hand_detection_confidence: float = 0.45,
+        min_hand_presence_confidence: float = 0.4,
         min_tracking_confidence: float = 0.5,
     ):
         base_opts = mp_python.BaseOptions(model_asset_path=str(model_path))

@@ -16,7 +16,8 @@ import { PlayerLayer, playerColor } from "./players.ts";
 import { ObjectiveLayer, SLOTS } from "./points.ts";
 import { TracerLayer } from "./tracers.ts";
 import {
-  type MapsState, escapeHtml, renderMapList, setHud, setStatus, setupConnectPanel, setupMerge, setupUploads, subscribeMaps,
+  type MapsState, type ReadyItem, escapeHtml, renderMapList, renderReadyList, setHud, setStatus, setupConnectPanel,
+  setupFoldingPanels, setupMerge, setupUploads, subscribeMaps,
 } from "./ui.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
@@ -218,7 +219,7 @@ function onState(next: MapsState) {
   updateAdjustPanel();
 
   if (!active) {
-    setStatus("No map yet.<br>Scan one with the phone app (QR code, top right) or drop a .ply/.spz here.");
+    setStatus("No map yet.<br><b>Open map file</b> (top right) to load a Scaniverse scan, or scan one with the HackTheSkies app.");
   } else if (active.status === "failed") {
     setStatus(`Training <b>${name}</b> failed.<br><small>${escapeHtml(active.error ?? "")}</small>`);
   } else if (!active.splatFile) {
@@ -760,9 +761,54 @@ renderer.setAnimationLoop((now) => {
       : { walk: "Walk", fly: "Fly", overview: "Map" }[controls.mode];
     const online = game.players.filter((p) => p.connected).length;
     setHud(mode, eye.position, fps, game.connected ? `${online} player${online === 1 ? "" : "s"} online` : "game server offline");
+    renderReadyList(readyChecklist());
   }
 });
 
+/** The host's checklist before a match, from what the servers report right now. */
+function readyChecklist(): ReadyItem[] {
+  const items: ReadyItem[] = [];
+  const active = state.maps.find((m) => m.id === state.activeId);
+  items.push(
+    current && active && current.map.id === active.id
+      ? { state: "done", label: `Map: ${active.name}` }
+      : { state: "todo", label: "Map", detail: "Open a Scaniverse scan (Open map file) or pick one in Maps" },
+  );
+  if (!game.connected || !combat.connected) {
+    items.push({ state: "warn", label: "Servers", detail: `${!game.connected ? "game server" : "shooting server"} offline: start run.py` });
+  }
+  const joined = game.players.filter((p) => p.connected);
+  if (combat.idMode === "clothes") {
+    const scanned = joined.filter((p) => combat.fighter(p.tag)?.scanned);
+    const missing = joined.filter((p) => !combat.fighter(p.tag)?.scanned).map((p) => p.name);
+    items.push(
+      !joined.length
+        ? { state: "todo", label: "Scan players", detail: "Each player turns around once at the scan station" }
+        : missing.length
+          ? { state: "warn", label: `Scanned ${scanned.length} of ${joined.length}`, detail: `Not scanned yet: ${missing.join(", ")}` }
+          : { state: "done", label: `All ${joined.length} players scanned` },
+    );
+  }
+  const placed = joined.filter((p) => p.calibrated);
+  items.push(
+    !joined.length
+      ? { state: "todo", label: "Players join", detail: "HTS Player app, with the address below" }
+      : placed.length < joined.length
+        ? { state: "warn", label: `${joined.length} joined, ${placed.length} placed`, detail: "Click Place next to each player, then where they stand" }
+        : { state: "done", label: `${joined.length} player${joined.length === 1 ? "" : "s"} joined and placed` },
+  );
+  const has = (kind: string, team?: string) => objectives.points.some((p) => p.kind === kind && (!team || p.team === team));
+  const missingObj = [!has("base", "red") && "Red base", !has("base", "blue") && "Blue base", !has("flag") && "Flag"].filter(Boolean);
+  items.push(
+    missingObj.length
+      ? { state: "todo", label: "Bases & flag", detail: `Place: ${missingObj.join(", ")}` }
+      : { state: "done", label: "Bases & flag placed" },
+  );
+  items.push(combat.active ? { state: "done", label: "Match running" } : { state: "todo", label: "Start match", detail: "In the Match panel" });
+  return items;
+}
+
 setupUploads();
+setupFoldingPanels();
 void setupConnectPanel();
 subscribeMaps(onState);

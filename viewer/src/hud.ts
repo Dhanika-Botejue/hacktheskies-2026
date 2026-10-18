@@ -248,7 +248,8 @@ export class Minimap {
 
 // ---- Scoreboard, feed and players panel -------------------------------------------------------
 
-const tagLabel = (p: GamePlayer) => (p.tag != null ? `#${p.tag}` : "no tag");
+// Players go by their number (scanned as, at the scan station): "P7".
+const tagLabel = (p: GamePlayer) => (p.tag != null ? `P${p.tag}` : "no number");
 
 export function renderScoreboard(players: GamePlayer[], combat: CombatLink) {
   const order = { red: 0, blue: 1 } as Record<string, number>;
@@ -313,10 +314,12 @@ export interface PlayerPanelActions {
 }
 
 function combatMeta(p: GamePlayer, combat: CombatLink) {
-  if (p.tag == null || !p.team) return `<span class="warn">no tag/team: can't be shot</span>`;
+  if (p.tag == null || !p.team) return `<span class="warn">no player number or team: can't be shot</span>`;
   const f = combat.fighter(p.tag);
   if (!f) return `<span>${tagLabel(p)} · ${combat.connected ? "not on the shooting server" : "shooting server offline"}</span>`;
-  return `<span>${tagLabel(p)} · <span class="hp">${healthText(f)}</span> · ${f.kills}K ${f.deaths}D${f.connected ? "" : " · camera offline"}</span>`;
+  const unscanned = combat.idMode === "clothes" && f.scanned === false
+    ? ` · <span class="warn">not scanned: can't be recognised</span>` : "";
+  return `<span>${tagLabel(p)} · <span class="hp">${healthText(f)}</span> · ${f.kills}K ${f.deaths}D${f.connected ? "" : " · camera offline"}${unscanned}</span>`;
 }
 
 let lastPanelHtml = "";
@@ -377,7 +380,10 @@ function setupWarnings(combat: CombatLink, players: GamePlayer[], points: MapObj
   }
   if (objs && !objs.tracking) warn.push("The shooting server can't reach the game server: it doesn't know where anyone is.");
   const untagged = players.filter((p) => p.tag == null || !p.team).length;
-  if (untagged) warn.push(`${untagged} player${untagged === 1 ? " has" : "s have"} no tag/team and can't be shot.`);
+  if (untagged) warn.push(`${untagged} player${untagged === 1 ? " has" : "s have"} no player number or team and can't be shot.`);
+  const unscanned = combat.idMode === "clothes"
+    ? [...combat.fighters.values()].filter((f) => f.scanned === false).map((f) => `P${f.player_id}`) : [];
+  if (unscanned.length) warn.push(`Not scanned yet (can't be recognised): ${unscanned.join(", ")}. Use the scan station.`);
   return warn;
 }
 

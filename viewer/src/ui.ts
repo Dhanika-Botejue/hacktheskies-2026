@@ -95,10 +95,17 @@ export function subscribeMaps(onState: (state: MapsState) => void) {
   source.onmessage = (e) => onState(JSON.parse(e.data));
 }
 
+// The servers run.py starts, on this laptop's network address.
+const GAME_PORT = 8443;
+const SCAN_STATION_PORT = 8766;
+
 export async function setupConnectPanel() {
   const info = await fetch("/api/info").then((r) => r.json());
   $("#qr").innerHTML = info.qrSvg;
   $("#server-url").textContent = info.serverUrl;
+  const host = new URL(info.serverUrl).hostname;
+  $("#join-address").textContent = `${host}:${GAME_PORT}`;
+  $<HTMLAnchorElement>("#scan-station").href = `https://${host}:${SCAN_STATION_PORT}/scan`;
   const panel = $("#connect-panel");
   const toggle = $<HTMLButtonElement>("#connect-toggle");
   const apply = (collapsed: boolean) => {
@@ -129,11 +136,12 @@ async function uploadSplat(file: File) {
 }
 
 export function setupUploads() {
-  const input = $<HTMLInputElement>("#file-input");
-  input.onchange = () => {
-    if (input.files?.[0]) uploadSplat(input.files[0]);
-    input.value = "";
-  };
+  document.querySelectorAll<HTMLInputElement>("input.map-file").forEach((input) => {
+    input.onchange = () => {
+      if (input.files?.[0]) uploadSplat(input.files[0]);
+      input.value = "";
+    };
+  });
   const hint = $("#drop-hint");
   let depth = 0;
   window.addEventListener("dragenter", (e) => {
@@ -166,4 +174,43 @@ export function setHud(mode: string, pos: { x: number; y: number; z: number }, f
   $("#hud-pos").textContent = `x ${pos.x.toFixed(2)}  y ${pos.y.toFixed(2)}  z ${pos.z.toFixed(2)} m`;
   $("#hud-fps").textContent = `${fps.toFixed(0)} fps`;
   $("#hud-game").textContent = game;
+}
+
+/** One line of the Get ready checklist: done, still to do, or a heads-up. */
+export interface ReadyItem {
+  state: "done" | "todo" | "warn";
+  label: string;
+  detail?: string;
+}
+
+let lastReadyHtml = "";
+export function renderReadyList(items: ReadyItem[]) {
+  const html = items
+    .map((it) => `<li class="${it.state}"><span class="mark">${it.state === "done" ? "✓" : it.state === "warn" ? "!" : "○"}</span>
+      <span><b>${escapeHtml(it.label)}</b>${it.detail ? `<small>${escapeHtml(it.detail)}</small>` : ""}</span></li>`)
+    .join("");
+  if (html === lastReadyHtml) return;
+  lastReadyHtml = html;
+  $("#ready-list").innerHTML = html;
+}
+
+/** Click a side panel's title to fold it away; remembered per panel. */
+export function setupFoldingPanels() {
+  document.querySelectorAll<HTMLElement>("#left .panel").forEach((panel) => {
+    const title = panel.querySelector<HTMLElement>("header h1");
+    if (!title || !panel.id) return;
+    const key = `folded:${panel.id}`;
+    const apply = (folded: boolean) => {
+      panel.classList.toggle("folded", folded);
+      try {
+        localStorage.setItem(key, folded ? "1" : "");
+      } catch {}
+    };
+    try {
+      apply(localStorage.getItem(key) === "1");
+    } catch {}
+    title.classList.add("fold-title");
+    title.title = "Click to fold or unfold";
+    title.onclick = () => apply(!panel.classList.contains("folded"));
+  });
 }

@@ -20,7 +20,7 @@
     <div id="scoreboard" hidden>
       <h1>Players</h1>
       <table>
-        <thead><tr><th>Name</th><th>Team · tag</th><th>HP</th><th>K / D</th><th>Link</th><th>Tracking</th><th>Accuracy</th></tr></thead>
+        <thead><tr><th>Name</th><th>Team · player</th><th>HP</th><th>K / D</th><th>Link</th><th>Tracking</th><th>Accuracy</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -32,7 +32,7 @@
         <span class="row">
           <button id="merge-toggle" class="btn small" title="Combine several scans into one bigger map">Merge</button>
           <label class="btn small" title="Load a .ply / .spz exported from another app">
-            Open file<input id="file-input" type="file" accept=".ply,.spz,.splat,.ksplat,.sog" hidden />
+            Open file<input id="file-input" class="map-file" type="file" accept=".ply,.spz,.splat,.ksplat,.sog" hidden />
           </label>
         </span>
       </header>
@@ -93,17 +93,31 @@
 
     <aside id="connect-panel" class="panel">
       <header>
-        <h1>Scan a map</h1>
+        <h1>Get ready</h1>
         <button id="connect-toggle" class="btn small">Hide</button>
       </header>
       <div id="connect-body">
-        <div id="qr"></div>
-        <ol>
-          <li>Scan this code with the iPhone Camera to connect the HackTheSkies app.</li>
-          <li>Tap <b>Scan Map</b> and walk around slowly.</li>
-          <li>Tap <b>Done</b>. The map appears here and sharpens as it trains.</li>
-        </ol>
-        <code id="server-url"></code>
+        <ol id="ready-list"></ol>
+        <div id="join-box">
+          <span>Players join in HTS Player with</span>
+          <code id="join-address">…</code>
+        </div>
+        <div class="row">
+          <a id="scan-station" class="btn small" target="_blank" rel="noopener" title="Scan each player's clothes before the match (opens on this laptop; on a phone, use the same address)">Scan station</a>
+          <label class="btn small" title="Load a map: a .ply / .spz from Scaniverse or another app">
+            Open map file<input class="map-file" type="file" accept=".ply,.spz,.splat,.ksplat,.sog" hidden />
+          </label>
+        </div>
+        <details id="scanner-app">
+          <summary>Scan the map with the HackTheSkies app instead</summary>
+          <div id="qr"></div>
+          <ol>
+            <li>Scan this code with the iPhone Camera to connect the app.</li>
+            <li>Tap <b>Scan Map</b> and walk around slowly.</li>
+            <li>Tap <b>Done</b>. The map appears here and sharpens as it trains.</li>
+          </ol>
+          <code id="server-url"></code>
+        </details>
       </div>
     </aside>
 

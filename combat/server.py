@@ -522,6 +522,8 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
 
                 await ws.send_json({
                     'type':          'frame_result',
+                    'id_mode':       ID_MODE,
+                    'scanned':       player.player_id in gallery,   # clothes mode: can others recognise you
                     'pose':          round(pose, 3),
                     'armed':         armed,
                     'aiming_tag_id': tag['id'] if tag else target_id,

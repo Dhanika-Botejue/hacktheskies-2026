@@ -24,6 +24,11 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
     var kills = 0
     var score = ""  // the flag clocks, or the kills when there's no flag
     var respawnMode = "timer"  // when down: "base" (walk back to your base) | "timer"
+    /// How the server tells players apart: "clothes" (scanned at the scan station) or "tags".
+    var idMode = "clothes"
+    /// Clothes mode: whether you've been scanned (others can only hit you once you are).
+    var scanned: Bool?
+    var needsScan: Bool { idMode == "clothes" && scanned == false }
     var error: String?
     var flash: Flash?  // brief full-screen colour after a hit
     var mic = "off"  // reload-clap microphone: "listening", "no mic permission", …
@@ -122,7 +127,9 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         case "registered":
             registered = true
             error = nil
-            status = "Joined the shooting server"
+            noteIdentity(msg)
+            status = idMode == "clothes" && scanned == false
+                ? "Joined · get scanned at the scan station so others can hit you" : "Joined the shooting server"
         case "frame_result":
             inFlightSince = nil
             frameResult(msg)
@@ -138,7 +145,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         default:
             if let e = msg["error"] as? String {
                 inFlightSince = nil  // a frame's reply can be an error too
-                error = e == "invalid_player_id" ? "Tag number must be 1–34" : e.replacingOccurrences(of: "_", with: " ")
+                error = e == "invalid_player_id" ? "Player number must be 1–34" : e.replacingOccurrences(of: "_", with: " ")
             }
         }
     }
@@ -161,7 +168,8 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         } else if let s = d["scores"] as? [String: Any] {
             score = "Red \(s["red_kills"] as? Int ?? 0) – \(s["blue_kills"] as? Int ?? 0) Blue"
         }
-        status = Self.describe(d)
+        noteIdentity(d)
+        status = Self.describe(d, idMode: idMode)
 
         // You can't see the screen: every change you need to know about is spoken.
         var news: [String] = []
@@ -232,9 +240,16 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         }
     }
 
+    /// The server's idea of who you are: recognition mode, and (clothes mode) whether you're scanned.
+    private func noteIdentity(_ d: [String: Any]) {
+        if let mode = d["id_mode"] as? String { idMode = mode }
+        if let s = d["scanned"] as? Bool { scanned = s }
+    }
+
     /// Why this frame did or didn't fire (the server's status), as on the web player page.
-    static func describe(_ d: [String: Any]) -> String {
+    static func describe(_ d: [String: Any], idMode: String) -> String {
         let target = d["aiming_tag_id"] as? Int
+        let clothes = idMode == "clothes"
         switch d["status"] as? String {
         case "hit": return "HIT player \(target ?? 0)!"
         case "dead": return d["respawn_mode"] as? String == "base" ? "You're down · walk back to your base" : "You're down"
@@ -242,13 +257,13 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         case "arming": return "Reloaded · ready in a moment"
         case "no_hand": return "Ready · hold your finger gun in view"
         case "two_hands": return "Shoot with one hand"
-        case "no_tag_visible": return "Ready · no tag in view"
-        case "not_aimed": return "Ready · point at the tag"
+        case "no_tag_visible": return clothes ? "Ready · nobody in view" : "Ready · no tag in view"
+        case "not_aimed": return clothes ? "Ready · point at a player" : "Ready · point at their tag"
         case "not_identified": return "Can't tell who that is yet · keep pointing"
-        case "pose_not_ready": return "Aiming at \(target ?? 0) · curl middle/ring to fire"
-        case "target_dead": return "Player \(target ?? 0) is already down"
-        case "same_team": return "Player \(target ?? 0) is on your team"
-        case "target_not_in_game": return "Player \(target ?? 0) hasn't joined"
+        case "pose_not_ready": return "Aiming at P\(target ?? 0) · curl middle/ring to fire"
+        case "target_dead": return "P\(target ?? 0) is already down"
+        case "same_team": return "P\(target ?? 0) is on your team"
+        case "target_not_in_game": return "P\(target ?? 0) hasn't joined"
         case let s?: return s
         case nil: return "–"
         }

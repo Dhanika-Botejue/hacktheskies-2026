@@ -1,7 +1,8 @@
 // Link to the shooting server (combat/server.py, proxied at /combat/): hit points, kills, every
 // shot, and the match it runs: who owns the flag, each team's flag time, respawns at the bases.
-// Its players are numbered by the tag on their chest; the game server's players carry the same
-// number (GamePlayer.tag), which is how the two are joined.
+// Its players are numbered (the number they were scanned as at the scan station, or printed on
+// their tag in tags mode); the game server's players carry the same number (GamePlayer.tag), which
+// is how the two are joined.
 
 export type Team = "red" | "blue";
 /** How a downed player comes back: by walking into their base, or after a timer (no base / not tracked). */
@@ -20,7 +21,12 @@ export interface Fighter {
   respawn_mode: RespawnMode;
   /** The shooting server knows where they are (from the game server). */
   tracked?: boolean;
+  /** Clothes mode: they've been scanned at the scan station, so they can be recognised. */
+  scanned?: boolean;
 }
+
+/** How players are told apart: their clothes (scanned before the game) or printed tags. */
+export type IdMode = "clothes" | "tags";
 
 export interface Scores {
   red_kills: number;
@@ -93,6 +99,7 @@ export class CombatLink {
   scores: Scores | null = null;
   objectives: Objectives | null = null;
   fighters = new Map<number, Fighter>();
+  idMode: IdMode = "clothes";
   onChange: () => void = () => {};
   onShot: (shot: ShotEvent) => void = () => {};
   onMatch: (started: boolean, scores: Scores | null) => void = () => {};
@@ -135,6 +142,7 @@ export class CombatLink {
       this.objectives = msg.objectives as Objectives;
       this.active = msg.game_active as boolean;
       this.elapsed = msg.elapsed as number;
+      if (msg.id_mode === "tags" || msg.id_mode === "clothes") this.idMode = msg.id_mode;
       this.onChange();
     } else if (msg.type === "shot_event") {
       this.onShot(msg as unknown as ShotEvent);

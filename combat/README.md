@@ -14,12 +14,14 @@ Phone camera (rear-facing, chest-mounted)
    │  JPEG frames @ 10fps
    ▼
 Python server  ──► MediaPipe Hands  →  finger-gun confidence (0–1)
-               ──► AprilTag detect  →  target player ID (from bib)
+               ──► people + clothes →  target player ID (matched against pre-game body scans)
                ──► shot logic       →  mark victim dead, notify both sides
                ──► WebSocket push   →  host dashboard + victim's phone
 ```
 
-All detection runs on the **server**. The phone is a dumb camera terminal.
+All detection runs on the **server**. The phone is a dumb camera terminal. Players are told apart
+by what they're wearing (`HTS_ID_MODE=clothes`, the default), or by printed AprilTag bibs
+(`HTS_ID_MODE=tags`, see "Tag ID convention").
 
 ## Quick start
 
@@ -31,7 +33,8 @@ pip install -r requirements.txt
 python server.py
 
 # 3. Host dashboard  → http://<LAN-IP>:8765/
-# 4. Each player opens → https://<LAN-IP>:8766/phone   (https: phone cameras need it;
+# 4. Scan station     → https://<LAN-IP>:8766/scan    (scan every player once, see below)
+# 5. Each player opens → https://<LAN-IP>:8766/phone   (https: phone cameras need it;
 #    tap through the self-signed certificate warning once)
 ```
 
@@ -43,11 +46,11 @@ addresses when it starts.
 No camera, phone or running server needed — each test starts its own server:
 
 ```bash
-python test_smoke.py   # unit tests: detectors, aiming, the gun, claps, scoring
+python test_smoke.py   # unit tests: detectors, aiming, the gun, claps, scoring, clothes matching
 python test_gun.py     # the whole gun end to end over real WebSockets: hits, HP,
                        # kills, mic + camera reload, whose clap it was, reconnects
 python test_api.py     # real camera pipeline on real JPEGs (printed tag -> hit),
-                       # web pages and downloads
+                       # web pages and downloads, the scan station, clothes -> hit
 ```
 
 ## Respawning (for the spawn-point code)
@@ -64,17 +67,53 @@ alive again.
 |------|---------|
 | `server.py` | aiohttp server: HTTP routes, WebSocket endpoints, frame pipeline |
 | `hand_detector.py` | MediaPipe Hands → finger-gun confidence score |
-| `tag_detector.py` | pupil-apriltags → player/base/flag ID from bib tags |
+| `person_id.py` | People (EfficientDet-Lite2) + their clothes (pose landmarker mask) → player ID from the body scans |
+| `tag_detector.py` | pupil-apriltags → player/base/flag ID from bib tags (`HTS_ID_MODE=tags`) |
 | `game_state.py` | Players, flags, shot resolution, scoring |
 | `static/phone.html` | Phone client (JS only does camera → JPEG → WS) |
+| `static/scan.html` | Scan station: one player at a time turns around in front of it |
 | `static/host.html` | Host dashboard (scoreboard, map, player list) |
+
+## Recognising players by their clothes
+
+**Before the game**, every player is scanned at the scan station (`/scan`, `static/scan.html`):
+prop a phone up at chest height (an iPhone: the same camera as in the game, which matters more
+than anything for colours), enter the player's number, and the player turns around slowly 2–4 m
+away. The server keeps `SCAN_SAMPLES` (24) views of their clothes, about 3 a second, then warns
+when two players look alike: when a quarter or more of one player's views would be confused with
+the other (`Gallery.lookalikes`). Scans are saved in `scans/` (kept across restarts;
+`DELETE /api/scans/<id>` or the page's Delete button forgets one).
+
+**In the game**, while one of your hands is in view, the server finds the people in your frame
+(MediaPipe ObjectDetector, EfficientDet-Lite2) and drops your own arm (a box rising from the frame
+bottom that starts below its middle, `OWN_ARM_TOP`). The `MAX_DESCRIBED` (2) people nearest your
+finger's line are described: the pose landmarker runs on each one's crop, its segmentation mask
+keeps only their own pixels (and your hand is masked out), and its shoulder/hip/knee landmarks
+split them into shirt and trousers. Each part is a colour histogram (12 soft hue bins + black /
+grey / white), compared by Bhattacharyya coefficient against everyone's scan (mean of the 3 best
+views, `TOP_K`).
+
+A person gets a player ID only when the best match is at least `MIN_SIM` (0.80), at least
+`MIN_MARGIN` (0.05) ahead of the runner-up, **and** the same player matched clearly within
+`CONFIRM_S` (0.4 s) before — a loaded gun fires on the first aimed frame, so one misread frame
+must never be enough. Otherwise they're "?" on the phone, and pointing at them gives
+`not_identified`: never a shot at anyone, and it also cancels an aim at someone else from a
+moment ago. Everyone scanned except the shooter is a candidate, teammates included.
+
+Tuning: every second (and on every hit) the server logs `matches=` with the two best scores of
+each person described, e.g. `12=[P12:0.97 P11:0.84]` (recognised as P12) or
+`?=[P3:0.86 P5:0.84]` (too close to call). Constants are at the top of `person_id.py`.
+
+Limits: two players dressed alike (black hoodie + jeans) can't be told apart by colour — the scan
+station warns; give one of them something distinctive. Someone who takes off a jacket needs a
+rescan. People cut off at the frame edge, or more than ~15 m away, often can't be described.
 
 ## Shot detection logic
 
 ```
 pose ≥ 0.75  →  reticle turns yellow ("armed")
 finger gun (index out + middle OR ring tucked)  ┐  both within
-index finger points roughly at a player tag     ┘  0.8 s   →  fires (every frame)
+index finger points at a recognised player      ┘  0.8 s   →  fires (every frame)
 first real hit                                  →  gun empty
 clap (both hands seen together)                 →  reloaded, fires again 1 s later
 ```
@@ -110,15 +149,21 @@ never a fresh one. A phone that disconnects mid-game stays in the game marked
 offline, so its kills still count; it's noticed within ~15 s even if it vanished
 silently. The next game drops players whose phones never came back.
 
-Detection flickers frame to frame (blur, distance), so an aim at a tag still counts
-for `TRIGGER_WINDOW_S` (`server.py`), and a tag that drops out is remembered at its
-last position for `TAG_MEMORY_S`. Going down, raising your second hand, or the game
-stopping cancels any aim in progress.
+Detection flickers frame to frame (blur, distance), so an aim at a player still counts
+for `TRIGGER_WINDOW_S` (`server.py`), and a player that drops out is remembered at their
+last position for `PERSON_MEMORY_S` (0.3 s; a tag for `TAG_MEMORY_S`, 0.8 s). A remembered
+position that a person in this frame now covers belongs to that person. Going down, raising
+your second hand, pointing at someone not recognised, or the game stopping cancels any aim
+in progress.
 
 Aiming: a 2D ray from the index knuckle through the fingertip is cast across the
-frame; the player tag closest to that ray (relative to its on-screen size) is the
-target. If the finger points straight at the camera, the tag under the fingertip wins.
-Tune `AIM_TOLERANCE` / `AIM_MIN_FINGER_PX` in `tag_detector.py`.
+frame. A person is hit when the ray passes through their body box, or close beside it
+(`PERSON_AIM_SLACK`, `AIM_MIN_ANGLE_DEG` in `person_id.py`), and their middle is ahead of the
+fingertip; a ray through the middle of a body beats one that grazes another, and of two
+people on the ray the closer (bigger) one is in front. Tags: the tag closest to that ray
+(relative to its on-screen size) is the target; tune `AIM_TOLERANCE` / `AIM_MIN_FINGER_PX` in
+`tag_detector.py`. If the finger points straight at the camera, the person / tag under the
+fingertip wins.
 
 Per-finger checks shown on the phone (the pose bar; only "index extended" gates
 aiming). Checked on 3D world landmarks, so any hand orientation works:
@@ -129,6 +174,8 @@ aiming). Checked on 3D world landmarks, so any hand orientation works:
 - Pinky curled
 
 ## Tag ID convention
+
+Only with `HTS_ID_MODE=tags`: players wear printed AprilTag bibs instead of being scanned.
 
 | ID range | Meaning |
 |----------|---------|

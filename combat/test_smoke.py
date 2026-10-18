@@ -375,6 +375,136 @@ except Exception as e:
 
 # ─────────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 55)
+print("7. PERSON ID — telling players apart by their clothes")
+print("=" * 55)
+
+try:
+    import tempfile, pathlib
+    import numpy as np
+    import person_id as pid_mod
+    from person_id import (CONFIRM_S, Gallery, PeopleMatcher, PersonDetector, ScanSession,
+                           clothing_descriptor, hands_mask, is_own_arm, pick_aimed_person, similarity)
+
+    def outfit(shirt, trousers, light=1.0, seed=0, h=200, w=80):
+        """Descriptor of a synthetic person: shirt colour over trousers colour (RGB),
+        with camera noise, and the shirt / trousers masks the pose step would give."""
+        rng = np.random.default_rng(seed)
+        img = np.zeros((h, w, 3), np.float32)
+        img[:h // 2], img[h // 2:] = shirt, trousers
+        img = np.clip(img * light + rng.normal(0, 6, img.shape), 0, 255).astype(np.uint8)
+        rows = np.repeat(np.arange(h)[:, None], w, axis=1)
+        return clothing_descriptor(img, rows < h // 2, rows >= h // 2)
+
+    RED, BLUE, GREEN = (200, 30, 30), (40, 60, 160), (40, 160, 60)
+    BLACK, WHITE, JEANS = (25, 25, 28), (230, 230, 225), (60, 80, 130)
+    red_blue = outfit(RED, BLUE)
+    check("clothes: same outfit, 20% darker, still matches (> 0.9)",
+          lambda: similarity(red_blue, outfit(RED, BLUE, light=0.8, seed=1)) > 0.9)
+    check("clothes: same outfit, 20% brighter, still matches (> 0.9)",
+          lambda: similarity(red_blue, outfit(RED, BLUE, light=1.2, seed=2)) > 0.9)
+    check("clothes: red/blue vs green/black don't match (< 0.4)",
+          lambda: similarity(red_blue, outfit(GREEN, BLACK)) < 0.4)
+    check("clothes: black vs white shirt over the same jeans are told apart (< 0.75)",
+          lambda: similarity(outfit(BLACK, JEANS), outfit(WHITE, JEANS)) < 0.75)
+    check("clothes: identical = 1, and more alike scores higher",
+          lambda: abs(similarity(red_blue, red_blue) - 1) < 1e-6
+                  and similarity(red_blue, outfit(RED, BLACK)) > similarity(red_blue, outfit(GREEN, BLACK)))
+    check("clothes: no trousers in view (cut off) -> compared on the shirt alone",
+          lambda: similarity({**red_blue, 'lower': None}, outfit(RED, BLACK)) > 0.9)
+
+    views = lambda shirt, trousers, base: [outfit(shirt, trousers, light=0.85 + 0.03 * i, seed=base + i)
+                                           for i in range(8)]
+    g = Gallery()
+    g.set(1, views(RED, BLUE, 10))
+    g.set(2, views(GREEN, BLACK, 20))
+    g.set(4, views(WHITE, JEANS, 30))
+    sc = g.scores(outfit(RED, BLUE, light=1.1, seed=99))
+    check("gallery: a new view of player 1 scores best for player 1",
+          lambda: max(sc, key=sc.get) == 1 and sc[1] > 0.9 and sc[2] < 0.5)
+    check("gallery: the shooter is never a candidate", lambda: 1 not in g.scores(red_blue, exclude={1}))
+    check("gallery: distinct outfits -> no look-alikes", lambda: g.confusable() == [])
+    g.set(3, views(RED, BLUE, 40))               # same outfit as player 1
+    check("gallery: two players in the same outfit are flagged as look-alikes",
+          lambda: [p[:2] for p in g.confusable()] == [(1, 3)] and g.lookalikes(1)[0][0] == 3)
+    with tempfile.TemporaryDirectory() as d:
+        path = pathlib.Path(d) / 'gallery.json'
+        g2 = Gallery(path)
+        g2.set(1, views(RED, BLUE, 10))
+        loaded = Gallery(path)
+        check("gallery: saved scans load back after a restart",
+              lambda: loaded.players() == [1] and abs(similarity(loaded.views(1)[0], g2.views(1)[0]) - 1) < 1e-3)
+        check("gallery: deleting a scan", lambda: loaded.remove(1) and Gallery(path).players() == [])
+
+    clear1 = {1: 0.95, 2: 0.60}
+    m = PeopleMatcher(player_id=9)
+    check("matcher: one clear frame is not enough (never fire on one misread)",
+          lambda: m.identify([clear1], 10.0) == [None])
+    check("matcher: the same player again within CONFIRM_S -> recognised",
+          lambda: m.identify([clear1], 10.0 + CONFIRM_S / 2) == [1])
+    m = PeopleMatcher()
+    m.identify([clear1], 10.0)
+    check("matcher: ...but not after more than CONFIRM_S", lambda: m.identify([clear1], 10.0 + CONFIRM_S + 0.1) == [None])
+    m = PeopleMatcher()
+    weak, close = {1: pid_mod.MIN_SIM - 0.05, 2: 0.3}, {1: 0.95, 2: 0.95 - pid_mod.MIN_MARGIN / 2}
+    check("matcher: below MIN_SIM -> never recognised",
+          lambda: m.identify([weak], 1.0) == [None] and m.identify([weak], 1.1) == [None])
+    check("matcher: runner-up within MIN_MARGIN -> never recognised",
+          lambda: m.identify([close], 2.0) == [None] and m.identify([close], 2.1) == [None])
+    m = PeopleMatcher()
+    check("matcher: alternating between two players doesn't confirm either",
+          lambda: m.identify([clear1], 3.0) == [None] and m.identify([{1: 0.6, 2: 0.95}], 3.1) == [None])
+    m = PeopleMatcher()
+    m.identify([clear1], 4.0)
+    check("matcher: two people can't both be player 1 (the better match keeps it)",
+          lambda: m.identify([{1: 0.90, 2: 0.5}, {1: 0.97, 2: 0.5}], 4.1) == [None, 1])
+    m.reset()
+    check("matcher: reset forgets", lambda: m.identify([clear1], 4.2) == [None])
+
+    W_, H_ = 960, 1280
+    check("own arm: a box rising from the frame bottom to below the middle is ignored",
+          lambda: is_own_arm((300, 800, 700, 1280), W_, H_))
+    check("own arm: a close player cut off at the bottom is not",
+          lambda: not is_own_arm((300, 200, 700, 1280), W_, H_))
+
+    near_p, far_p = {'box': (400, 300, 600, 900)}, {'box': (450, 450, 520, 650)}
+    up = ((500, 1100), (500, 1000))               # knuckle -> tip, pointing straight up the frame
+    check("aim: finger ray through a body box hits it",
+          lambda: pick_aimed_person([near_p], *up) is near_p)
+    check("aim: a person well off the ray is missed",
+          lambda: pick_aimed_person([{'box': (800, 300, 900, 600)}], *up) is None)
+    check("aim: a person behind the fingertip is missed",
+          lambda: pick_aimed_person([{'box': (450, 1150, 550, 1270)}], (500, 1000), (500, 900)) is None)
+    check("aim: two people on the ray -> the closer (bigger) one",
+          lambda: pick_aimed_person([far_p, near_p], *up) is near_p)
+    check("aim: finger pointing at the camera -> the person under the fingertip",
+          lambda: pick_aimed_person([near_p], (500, 600), (505, 605)) is near_p)
+    behind_hand, across = {'box': (200, 150, 450, 650)}, {'box': (800, 150, 1050, 650)}
+    check("aim: hand in front of one person, pointing across at another -> the other",
+          lambda: pick_aimed_person([behind_hand, across], (330, 560), (407, 539)) is across)
+
+    box = lambda y0, y1, x0=400, x1=560: {'box': (x0, y0, x1, y1)}
+    check("scan: nobody in view", lambda: ScanSession.pick([], W_, H_) == (None, 'no_person'))
+    check("scan: two people in view", lambda: ScanSession.pick([box(300, 1000), box(320, 990, 700, 860)], W_, H_)[1] == 'one_person')
+    check("scan: feet cut off -> step back", lambda: ScanSession.pick([box(300, 1280)], W_, H_)[1] == 'step_back')
+    check("scan: too far -> step closer", lambda: ScanSession.pick([box(500, 800)], W_, H_)[1] == 'closer')
+    check("scan: one whole person -> scanned (a small one far behind is fine)",
+          lambda: ScanSession.pick([box(200, 1100), box(500, 700, 50, 120)], W_, H_)[1] is None)
+
+    mask = hands_mask([[(0.5, 0.5), (0.55, 0.5), (0.5, 0.6), (0.55, 0.6)]], 100, 100)
+    check("hand mask covers the hand (grown a little), nothing else",
+          lambda: mask[55, 52] and mask[49, 52] and not mask[10, 10] and not mask[90, 90])
+
+    det = PersonDetector()
+    check("person detector loads both models (efficientdet_lite2 + pose_landmarker_lite)", lambda: True)
+    check("person detector: nobody in an empty frame",
+          lambda: det.detect(np.full((640, 480, 3), 128, np.uint8)) == [])
+    det.close()
+except Exception as e:
+    print(f"  {FAIL}  person_id error: {e}")
+    import traceback; traceback.print_exc()
+
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n" + "=" * 55)
 print("DONE — fix any FAIL lines before running the game")
 print("=" * 55)
 

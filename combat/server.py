@@ -1,13 +1,15 @@
 """
 server.py  (simplified — shoot-only)
 ======================================
-HackTheSkies: finger-gun + AprilTag shooting game.
+HackTheSkies: finger-gun shooting game.  Who you shot is told by what they're
+wearing (ID_MODE 'clothes': everyone's body scan from the scan station, see
+person_id.py), or by a printed AprilTag bib (ID_MODE 'tags', see tag_detector.py).
 
 WebSocket protocol — phone (/ws/phone)
 ---------------------------------------
   Phone -> Server:  JSON  {"type":"register","player_id":7,"team":"red"}
-                    (player_id 1..MAX_PLAYER_ID, the IDs that have a tag; re-registering
-                    the same ID + team, e.g. after a Wi-Fi drop, rejoins as that player)
+                    (player_id 1..MAX_PLAYER_ID; re-registering the same ID + team,
+                    e.g. after a Wi-Fi drop, rejoins as that player)
   Phone -> Server:  JSON  {"type":"clap","peak":0.83}   (mic heard a clap; sent for
                     every clap, so the server can tell whose it was — see ClapReferee)
   Phone -> Server:  JSON  {"type":"mic","state":"listening"}   (for the log)
@@ -15,6 +17,15 @@ WebSocket protocol — phone (/ws/phone)
   Server -> Phone:  JSON  registered | {"error": ...}   (reply to register)
   Server -> Phone:  JSON  frame_result | idle | {"error": ...}   (reply to every frame)
   Server -> Phone:  JSON  shot_event     (push, when this player is hit)
+  In frame_result, tags_seen / aiming_tag_id are the targets in view whatever
+  ID_MODE is: bib tags, or people (kind "person"; id null = not recognised).
+
+WebSocket protocol — scan station (/ws/scan, static/scan.html)
+---------------------------------------------------------------
+  Station -> Server:  JSON  {"type":"scan_start","player_id":7} | {"type":"scan_stop"}
+  Station -> Server:  BINARY  <raw JPEG bytes>  (one frame in flight)
+  Server -> Station:  JSON  scan_started | scan_progress (every frame) | scan_done |
+                            scan_idle (frame while no scan runs) | {"error": ...}
 
 WebSocket protocol — host (/ws/host)
 --------------------------------------
@@ -29,6 +40,8 @@ REST
   POST /api/stop          Stop game
   GET  /api/state         Full game snapshot
   GET  /api/network-info  Returns LAN IP for phone auto-fill
+  GET  /api/scans         Scanned players, thumbnails, look-alike pairs
+  DELETE /api/scans/{id}  Forget a player's scan
 """
 from __future__ import annotations
 
@@ -49,7 +62,9 @@ import numpy as np
 from aiohttp import web, WSMsgType
 
 from game_state import CLAP_MATCH_S, GameState, MAX_HP
-from hand_detector import HandDetector, INDEX_MCP, INDEX_TIP, ClapTracker, own_palms, shooting_hand
+from hand_detector import HandDetector, INDEX_MCP, INDEX_TIP, ClapTracker, own_hands, own_palms, shooting_hand
+from person_id import (SCAN_SAMPLES, Gallery, PeopleMatcher, PersonDetector, ScanSession, aim_candidates,
+                       box_corners, box_iou, hands_mask, is_own_arm, pick_aimed_person)
 from tag_detector import MAX_PLAYER_ID, TagDetector, pick_aimed_tag
 
 logging.basicConfig(
@@ -62,8 +77,12 @@ HOST  = '0.0.0.0'
 PORT  = int(os.environ.get('PORT', 8765))
 STATIC_DIR = Path(__file__).parent / 'static'
 TAGS_DIR   = Path(__file__).parent / 'tags'   # written by gen_tags.py
+SCANS_DIR  = Path(__file__).parent / 'scans'  # body scans + thumbnails (gitignored)
 CERT_DIR   = Path(__file__).parent / 'certs'  # self-signed HTTPS cert (gitignored)
 HTTPS_PORT = int(os.environ.get('HTTPS_PORT', PORT + 1))
+
+# How the target is told: 'clothes' (pre-game body scan at /scan) or 'tags' (printed bibs)
+ID_MODE = os.environ.get('HTS_ID_MODE', 'clothes')
 
 POSE_ARMED_THRESHOLD = 0.75   # pose bar colour on the phone (information only)
 # One-handed finger gun (game_state.Gun): while loaded it fires on any frame
@@ -73,6 +92,10 @@ POSE_ARMED_THRESHOLD = 0.75   # pose bar colour on the phone (information only)
 # tags that drop out are remembered at their last position for TAG_MEMORY_S.
 TRIGGER_WINDOW_S     = 0.8
 TAG_MEMORY_S         = 0.8
+# People are remembered for less: a chest camera swings them across the frame
+# as its wearer turns, so an old position soon points at someone else.
+PERSON_MEMORY_S      = 0.3
+MAX_DESCRIBED        = 2      # people near the finger's line matched per frame (~12 ms each)
 MAX_FRAME_BYTES      = 2 * 1024 * 1024
 STATE_BROADCAST_INTERVAL = 0.5
 DIAG_LOG_INTERVAL    = 1.0   # seconds between per-player "why didn't it fire" log lines
@@ -94,17 +117,62 @@ def _tag_detector() -> TagDetector:
         _tlocal.tag = TagDetector(quad_decimate=1.0)
     return _tlocal.tag
 
+def _person_detector() -> PersonDetector:
+    if not hasattr(_tlocal, 'person'):
+        _tlocal.person = PersonDetector()
+    return _tlocal.person
+
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='frame-worker')
 
 game         = GameState()
+gallery      = Gallery(SCANS_DIR / 'gallery.json')   # everyone's body scan, kept across restarts
 host_sockets: Set[web.WebSocketResponse] = set()
 
 
 # ── Frame processing (runs in thread pool) ────────────────────────────────────
 
-def _process_frame(jpeg_bytes: bytes, remembered: list[dict]) -> dict:
-    """remembered: player tags seen in recent frames but possibly missed in this
-    one (blur etc.); used for aiming if not re-detected, marked stale=True."""
+def _find_people(rgb: np.ndarray, hands: list[dict], aim, matcher: PeopleMatcher | None) -> list[dict]:
+    """
+    The people in view as targets, shaped like tags: {'id' (None = not
+    recognised), 'box', 'center', 'corners', 'kind': 'person'}.  Only the
+    MAX_DESCRIBED nearest the finger's line (aim = (knuckle, tip)) are matched
+    against the scans; their scores go in 'match' for the log.
+    """
+    h, w = rgb.shape[:2]
+    detector = _person_detector()
+    people = []
+    for p in detector.detect(rgb):
+        if is_own_arm(p['box'], w, h):
+            continue
+        x0, y0, x1, y1 = p['box']
+        people.append({'id': None, 'box': p['box'], 'center': ((x0 + x1) / 2, (y0 + y1) / 2),
+                       'corners': box_corners(p['box']), 'kind': 'person'})
+    near = aim_candidates(people, *aim)[:MAX_DESCRIBED] if aim and matcher else []
+    if not near:
+        return people
+
+    # Your own hand in front of them isn't part of their clothes
+    mask = hands_mask([hd['landmarks'] for hd in own_hands(hands, w, h)], w, h)
+    described, scored = [], []
+    for p in near:
+        desc = detector.describe(rgb, p['box'], mask)
+        if desc is None:
+            p['match'] = 'no body'
+            continue
+        scores = gallery.scores(desc, exclude={matcher.player_id})
+        best = sorted(scores.items(), key=lambda kv: -kv[1])[:2]
+        p['match'] = ' '.join(f'P{pid}:{s:.2f}' for pid, s in best) or 'nobody scanned'
+        described.append(p)
+        scored.append(scores)
+    for p, pid in zip(described, matcher.identify(scored, time.monotonic())):
+        p['id'] = pid
+    return people
+
+
+def _process_frame(jpeg_bytes: bytes, remembered: list[dict], people: PeopleMatcher | None = None) -> dict:
+    """remembered: targets seen in recent frames but possibly missed in this
+    one (blur etc.); used for aiming if not re-detected, marked stale=True.
+    people: this phone's PeopleMatcher (ID_MODE 'clothes')."""
     arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
     bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if bgr is None:
@@ -112,24 +180,44 @@ def _process_frame(jpeg_bytes: bytes, remembered: list[dict]) -> dict:
 
     h, w = bgr.shape[:2]
     rgb  = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
     hand_result = _hand_detector().process(rgb)
-    # Only look for player tags (IDs 1-99)
-    fresh = [t for t in _tag_detector().detect(gray) if t['role'] == 'player']
-    fresh_ids = {t['id'] for t in fresh}
-    tags = fresh + [{**t, 'stale': True} for t in remembered if t['id'] not in fresh_ids]
 
     # One hand shoots: the one closest to the camera (biggest in the frame).
     # Its index finger aims along the knuckle -> fingertip ray.
     hands = hand_result['hands']
     shooter = shooting_hand(hands, w, h)
-    tag = None
+    aim = None
     if shooter and shooter['criteria']['index_extended']:
-        lms     = shooter['landmarks']
-        knuckle = (lms[INDEX_MCP][0] * w, lms[INDEX_MCP][1] * h)
-        tip     = (lms[INDEX_TIP][0] * w, lms[INDEX_TIP][1] * h)
-        tag     = pick_aimed_tag(tags, knuckle, tip)
+        lms = shooter['landmarks']
+        aim = ((lms[INDEX_MCP][0] * w, lms[INDEX_MCP][1] * h),    # knuckle
+               (lms[INDEX_TIP][0] * w, lms[INDEX_TIP][1] * h))    # fingertip
+
+    unknown = []
+    if ID_MODE == 'tags':
+        # Only look for player tags (IDs 1-99)
+        gray  = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        fresh = [t for t in _tag_detector().detect(gray) if t['role'] == 'player']
+    else:
+        # Only while a hand of yours is in view: no aim without one, and it saves CPU
+        found   = _find_people(rgb, hands, aim, people) if shooter else []
+        fresh   = [p for p in found if p['id'] is not None]
+        unknown = [p for p in found if p['id'] is None]
+    fresh_ids = {t['id'] for t in fresh}
+    # A remembered person under a fresh box is that box now (which may be someone else)
+    boxes = [p['box'] for p in fresh + unknown if 'box' in p]
+    tags = fresh + [{**t, 'stale': True} for t in remembered
+                    if t['id'] not in fresh_ids
+                    and not ('box' in t and any(box_iou(t['box'], b) > 0.3 for b in boxes))]
+
+    tag, aimed_unknown = None, False
+    if aim and ID_MODE == 'tags':
+        tag = pick_aimed_tag(tags, *aim)
+    elif aim:
+        # Pointing at someone not recognised (yet) is never a shot at anyone else
+        aimed = pick_aimed_person(tags + unknown, *aim)
+        tag = aimed if aimed and aimed['id'] is not None else None
+        aimed_unknown = aimed is not None and aimed['id'] is None
 
     return {
         'pose':      shooter['confidence'] if shooter else 0.0,
@@ -143,12 +231,41 @@ def _process_frame(jpeg_bytes: bytes, remembered: list[dict]) -> dict:
         'other_landmarks': [hd['landmarks'] for hd in hands if hd is not shooter],
         'criteria':  shooter['criteria'] if shooter else {},
         'tag':       tag,
+        'aimed_unknown': aimed_unknown,
         'fresh_tags': fresh,
-        'tags_seen': [{'id': t['id'], 'corners': t['corners'], 'stale': t.get('stale', False)}
-                      for t in tags],
+        'tags_seen': [{'id': t['id'], 'corners': t['corners'], 'stale': t.get('stale', False),
+                       'kind': t.get('kind', 'tag')} for t in tags + unknown],
+        'matches':   [f'{p["id"] or "?"}=[{p["match"]}]' for p in fresh + unknown if 'match' in p],
         'frame_w':   w,
         'frame_h':   h,
     }
+
+
+def _scan_frame(jpeg_bytes: bytes, want_view: bool) -> dict:
+    """
+    One frame from the scan station: the person being scanned ('box') or why
+    the frame won't do ('hint', a ScanSession.HINTS key), and when the scan
+    wants another view, their clothing descriptor ('desc') + RGB crop ('thumb').
+    """
+    bgr = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if bgr is None:
+        return {'error': 'jpeg_decode_failed'}
+    h, w = bgr.shape[:2]
+    rgb  = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    detector = _person_detector()
+    person, hint = ScanSession.pick(detector.detect(rgb), w, h)
+    out = {'box': person['box'] if person else None, 'hint': hint, 'desc': None, 'thumb': None,
+           'frame_w': w, 'frame_h': h}
+    if person and want_view:
+        desc = detector.describe(rgb, person['box'])
+        if desc is None:
+            out['hint'] = 'no_body'
+        elif desc['lower'] is None:
+            out['hint'] = 'step_back'
+        else:
+            x0, y0, x1, y1 = (int(v) for v in person['box'])
+            out['desc'], out['thumb'] = desc, rgb[y0:y1, x0:x1].copy()
+    return out
 
 
 # ── Broadcast helpers ─────────────────────────────────────────────────────────
@@ -164,6 +281,15 @@ async def _settle_claps():
                      + (f'  — also heard by P{", P".join(map(str, others))}, ignored there' if others else ''))
         elif others:
             log.info(f'CLAP  by P{clapper} (no reload needed) — not counted for P{", P".join(map(str, others))}')
+
+
+def _snapshot() -> dict:
+    """game.snapshot() plus whether each player has been scanned."""
+    snap = game.snapshot()
+    for pid, p in snap['players'].items():
+        p['scanned'] = int(pid) in gallery
+    snap['id_mode'] = ID_MODE
+    return snap
 
 
 def _owns(player, ws) -> bool:
@@ -196,6 +322,8 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
     last_ready_at = 0.0                              # last frame with a finger-gun pose
     last_aim: tuple[int, float] | None = None        # (tag id, when) last aimed at
     claps = ClapTracker()                            # clap = reload, seen across frames
+    people = PeopleMatcher()                         # who's who in this phone's camera (ID_MODE 'clothes')
+    memory_s = TAG_MEMORY_S if ID_MODE == 'tags' else PERSON_MEMORY_S
 
     log.info(f'Phone connected from {request.remote}')
 
@@ -229,7 +357,10 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                         await ws.send_json({'error': 'invalid_player_id', 'max_player_id': MAX_PLAYER_ID})
                         continue
                     player = await game.add_player(pid, team, ws)
-                    await ws.send_json({'type': 'registered', 'player_id': pid, 'team': team})
+                    people.player_id = pid
+                    people.reset()
+                    await ws.send_json({'type': 'registered', 'player_id': pid, 'team': team,
+                                        'id_mode': ID_MODE, 'scanned': pid in gallery})
                     await _broadcast_host({'type': 'player_joined', 'player': player.to_dict()})
 
                 elif data.get('type') == 'mic' and owner:
@@ -261,12 +392,13 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     continue
                 if not game.game_active:
                     last_ready_at, last_aim = 0.0, None     # no aim carries into the next game
+                    people.reset()
                     await ws.send_json({'type': 'idle', 'scores': game.scores()})
                     continue
 
                 now = time.monotonic()
-                remembered = [t for t, seen in tag_memory.values() if now - seen <= TAG_MEMORY_S]
-                det = await loop.run_in_executor(_executor, _process_frame, msg.data, remembered)
+                remembered = [t for t, seen in tag_memory.values() if now - seen <= memory_s]
+                det = await loop.run_in_executor(_executor, _process_frame, msg.data, remembered, people)
 
                 if 'error' in det:
                     # Reply anyway: the phone waits for one reply per frame
@@ -291,6 +423,10 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     last_ready_at = now
                 if tag:
                     last_aim = (tag['id'], now)
+                elif det.get('aimed_unknown'):
+                    # Now pointing at someone not recognised: the aim at whoever
+                    # was recognised a moment ago must not fire at this person
+                    last_aim = None
                 fire_ready = now - last_ready_at <= TRIGGER_WINDOW_S
                 aim_ready  = last_aim is not None and now - last_aim[1] <= TRIGGER_WINDOW_S
                 target_id  = last_aim[0] if aim_ready else None
@@ -320,6 +456,8 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     status = 'no_hand'
                 elif not det['tags_seen']:
                     status = 'no_tag_visible'
+                elif det.get('aimed_unknown'):
+                    status = 'not_identified'
                 elif not aim_ready:
                     status = 'not_aimed'
                 else:
@@ -335,11 +473,14 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 # Every frame while waiting for a reload clap (to tune clap detection)
                 if status in ('hit', 'reload') or now - last_diag >= DIAG_LOG_INTERVAL:
                     last_diag = now
-                    seen = [f'{t["id"]}{"(mem)" if t["stale"] else ""}' for t in det['tags_seen']]
+                    seen = [f'{"?" if t["id"] is None else t["id"]}{"(mem)" if t["stale"] else ""}'
+                            for t in det['tags_seen']]
                     log.info(f'P{player.player_id}  status={status:<18} gun={gun:<7} '
                              f'hands={det["n_hands"]} own={len(det["own_palms"])} gap={claps.last_gap}  '
                              f'tags_seen={seen}  '
-                             f'aimed={tag["id"] if tag else None}  window_target={target_id}')
+                             f'aimed={tag["id"] if tag else ("?" if det.get("aimed_unknown") else None)}  '
+                             f'window_target={target_id}'
+                             + (f'  matches={" ".join(det["matches"])}' if det.get('matches') else ''))
 
                 if shot_event:
                     log.info(f'SHOT  P{player.player_id} -> P{target_id}')
@@ -398,6 +539,95 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+# ── WebSocket — Scan station ──────────────────────────────────────────────────
+
+def _thumbnail_url(pid: int) -> str:
+    # Relative, so it also works behind the viewer's /combat/ proxy; ?v=: a rescan shows at once
+    return f'scans/p{pid}.jpg?v={int(gallery.scanned_at.get(pid, 0))}'
+
+
+async def _finish_scan(session: ScanSession) -> dict:
+    pid = session.player_id
+    gallery.set(pid, session.views)
+    if session.thumbnail is not None:
+        th = session.thumbnail
+        th = cv2.resize(th, (max(1, round(th.shape[1] * 240 / th.shape[0])), 240))
+        cv2.imwrite(str(SCANS_DIR / f'p{pid}.jpg'), cv2.cvtColor(th, cv2.COLOR_RGB2BGR))
+    looks_like = await asyncio.get_event_loop().run_in_executor(_executor, gallery.lookalikes, pid)
+    log.info(f'SCAN  P{pid} scanned ({len(session.views)} views)'
+             + (f' — looks like {", ".join(f"P{o} ({r:.0%})" for o, r in looks_like)}' if looks_like else ''))
+    return {'type': 'scan_done', 'player_id': pid, 'views': len(session.views),
+            'thumbnail': _thumbnail_url(pid),
+            'looks_like': [{'player_id': o, 'share': r} for o, r in looks_like]}
+
+
+async def ws_scan(request: web.Request) -> web.WebSocketResponse:
+    """The scan station: one player at a time turns around in front of its camera."""
+    ws      = web.WebSocketResponse(max_msg_size=MAX_FRAME_BYTES, heartbeat=10.0)
+    await ws.prepare(request)
+    loop    = asyncio.get_event_loop()
+    session: ScanSession | None = None
+    log.info(f'Scan station connected from {request.remote}')
+
+    async for msg in ws:
+        if msg.type == WSMsgType.TEXT:
+            try:
+                data = json.loads(msg.data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get('type') == 'scan_start':
+                try:
+                    pid = int(data['player_id'])
+                except (KeyError, TypeError, ValueError):
+                    await ws.send_json({'error': 'bad_player_id'})
+                    continue
+                if not 1 <= pid <= MAX_PLAYER_ID:
+                    await ws.send_json({'error': 'invalid_player_id', 'max_player_id': MAX_PLAYER_ID})
+                    continue
+                session = ScanSession(pid)
+                log.info(f'SCAN  P{pid} started')
+                await ws.send_json({'type': 'scan_started', 'player_id': pid, 'needed': SCAN_SAMPLES})
+            elif data.get('type') == 'scan_stop':
+                session = None
+                await ws.send_json({'type': 'scan_stopped'})
+
+        elif msg.type == WSMsgType.BINARY:
+            # Reply to every frame: the page sends the next one when this one's answered
+            if session is None:
+                await ws.send_json({'type': 'scan_idle'})
+                continue
+            now = time.monotonic()
+            res = await loop.run_in_executor(_executor, _scan_frame, msg.data, session.wants_view(now))
+            if 'error' in res:
+                await ws.send_json({'error': res['error']})
+                continue
+            if res['desc'] is not None:
+                session.add(res['desc'], res['thumb'], now)
+            if session.done:
+                await ws.send_json(await _finish_scan(session))
+                session = None
+                continue
+            await ws.send_json({
+                'type':     'scan_progress',
+                'player_id': session.player_id,
+                'samples':  len(session.views),
+                'needed':   SCAN_SAMPLES,
+                'took':     res['desc'] is not None,
+                'box':      res['box'],
+                'hint':     ScanSession.HINTS.get(res['hint']),
+                'frame_w':  res['frame_w'],
+                'frame_h':  res['frame_h'],
+            })
+
+        elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
+            break
+
+    log.info(f'Scan station disconnected ({request.remote})')
+    return ws
+
+
 # ── WebSocket — Host ──────────────────────────────────────────────────────────
 
 async def ws_host(request: web.Request) -> web.WebSocketResponse:
@@ -405,7 +635,7 @@ async def ws_host(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
     host_sockets.add(ws)
     log.info(f'Host dashboard connected from {request.remote}')
-    await ws.send_json({'type': 'state_update', **game.snapshot()})
+    await ws.send_json({'type': 'state_update', **_snapshot()})
 
     try:
         async for msg in ws:
@@ -448,7 +678,30 @@ async def api_stop(request):
         return web.json_response({'ok': False, 'error': str(e)}, status=500)
 
 async def api_state(request):
-    return web.json_response(game.snapshot())
+    return web.json_response(_snapshot())
+
+
+async def api_scans(request):
+    pairs = await asyncio.get_event_loop().run_in_executor(_executor, gallery.confusable)
+    return web.json_response({
+        'id_mode': ID_MODE,
+        'needed':  SCAN_SAMPLES,
+        'scans':   [{'player_id': pid, 'views': len(gallery.views(pid)), 'thumbnail': _thumbnail_url(pid)}
+                    for pid in gallery.players()],
+        'lookalikes': [{'a': a, 'b': b, 'share': r} for a, b, r in pairs],
+    })
+
+
+async def api_scan_delete(request):
+    try:
+        pid = int(request.match_info['pid'])
+    except ValueError:
+        raise web.HTTPBadRequest(text='bad player id')
+    removed = gallery.remove(pid)
+    (SCANS_DIR / f'p{pid}.jpg').unlink(missing_ok=True)
+    if removed:
+        log.info(f'SCAN  P{pid} deleted')
+    return web.json_response({'ok': removed})
 
 def _is_private(ip: str) -> bool:
     a = [int(x) for x in ip.split('.')]
@@ -541,7 +794,7 @@ async def _state_broadcaster():
         await asyncio.sleep(STATE_BROADCAST_INTERVAL)
         await game.check_auto_respawns()
         if host_sockets:
-            snap = game.snapshot()
+            snap = _snapshot()
             snap['type'] = 'state_update'
             await _broadcast_host(snap)
 
@@ -563,10 +816,15 @@ def build_app() -> web.Application:
     app = web.Application()
     app.router.add_get('/ws/phone', ws_phone)
     app.router.add_get('/ws/host',  ws_host)
+    app.router.add_get('/ws/scan',  ws_scan)
     app.router.add_post('/api/start',        api_start)
     app.router.add_post('/api/stop',         api_stop)
     app.router.add_get ('/api/state',        api_state)
     app.router.add_get ('/api/network-info', api_network_info)
+    app.router.add_get ('/api/scans',        api_scans)
+    app.router.add_delete('/api/scans/{pid}', api_scan_delete)
+    SCANS_DIR.mkdir(exist_ok=True)
+    app.router.add_static('/scans', SCANS_DIR)
     app.router.add_static('/static', STATIC_DIR)
     app.router.add_get('/tags',     tags_index)
     app.router.add_get('/tags/',    tags_index)
@@ -575,6 +833,7 @@ def build_app() -> web.Application:
     app.router.add_static('/tags', TAGS_DIR)
     app.router.add_get('/',      lambda r: web.FileResponse(STATIC_DIR / 'host.html'))
     app.router.add_get('/phone', lambda r: web.FileResponse(STATIC_DIR / 'phone.html'))
+    app.router.add_get('/scan',  lambda r: web.FileResponse(STATIC_DIR / 'scan.html'))
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
@@ -616,13 +875,18 @@ async def _serve():
     if ssl_ctx:
         await web.TCPSite(runner, HOST, HTTPS_PORT, ssl_context=ssl_ctx).start()
     log.info('=' * 60)
-    log.info(f'  HackTheSkies  (shoot-only mode)')
+    log.info(f'  HackTheSkies  (shoot-only mode, players told apart by {ID_MODE})')
     log.info(f'  Host dashboard:  http://{lan_ip}:{PORT}/')
     if ssl_ctx:
         log.info(f'  Phone client:    https://{lan_ip}:{HTTPS_PORT}/phone   (camera needs https)')
     else:
         log.info(f'  Phone client:    http://{lan_ip}:{PORT}/phone   (no https: camera blocked)')
-    log.info(f'  Tag downloads:   http://{lan_ip}:{PORT}/tags')
+    if ID_MODE == 'tags':
+        log.info(f'  Tag downloads:   http://{lan_ip}:{PORT}/tags')
+    elif ssl_ctx:
+        log.info(f'  Scan station:    https://{lan_ip}:{HTTPS_PORT}/scan   ({len(gallery.players())} scanned)')
+    else:
+        log.info(f'  Scan station:    http://localhost:{PORT}/scan   ({len(gallery.players())} scanned)')
     log.info('=' * 60)
     try:
         await asyncio.Event().wait()

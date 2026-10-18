@@ -234,3 +234,6 @@ tools/share/
 
 # Shooting server's self-signed HTTPS cert (combat/server.py generates it)
 combat/certs/
+
+# Body scans from the scan station (combat/server.py writes them)
+combat/scans/

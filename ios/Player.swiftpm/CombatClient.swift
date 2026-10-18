@@ -181,11 +181,11 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         hp = d["hp"] as? Int ?? hp
         if d["killed"] as? Bool == true {
             alive = false
-            say("You're down")
+            say("You're down", urgent: true)
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             show(.down)
         } else {
-            say("Hit! \(hp) left")
+            say("Hit! \(hp) left", urgent: true)
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
             show(.hurt)
         }
@@ -221,11 +221,13 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
 
     // ---------- voice ----------
 
-    private func say(_ text: String) {
+    /// Lines queue up so quick events ("Reloaded", "Ready") don't chop each other off; being hit is
+    /// urgent and cuts in.
+    private func say(_ text: String, urgent: Bool = false) {
         let u = AVSpeechUtterance(string: text)
         u.rate = 0.55
         u.volume = 1
-        voice.stopSpeaking(at: .immediate)  // the newest news matters most
+        if urgent { voice.stopSpeaking(at: .word) }
         voice.speak(u)
     }
 
@@ -268,8 +270,9 @@ final class ClapDetector {
         guard !engine.isRunning else { return }
         let session = AVAudioSession.sharedInstance()
         do {
-            // Raw audio: voice processing would soften exactly the sharp clap we listen for.
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .mixWithOthers])
+            // .default, not .measurement: measurement mode turns the speaker way down. Neither applies
+            // voice processing (only .voiceChat/.videoChat do), so the mic still hears sharp claps.
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .mixWithOthers])
             try session.setActive(true)
         } catch {
             state = "audio error"

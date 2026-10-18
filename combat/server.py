@@ -110,6 +110,7 @@ PERSON_MEMORY_S      = 0.3
 MAX_DESCRIBED        = 2      # people near the finger's line matched per frame (~12 ms each)
 MAX_FRAME_BYTES      = 2 * 1024 * 1024
 STATE_BROADCAST_INTERVAL = 0.25   # also how often the objectives run (respawns, the flag)
+HOST_SEND_TIMEOUT_S  = 1.0   # a host screen that can't take a message this long is hung up on
 DIAG_LOG_INTERVAL    = 1.0   # seconds between per-player "why didn't it fire" log lines
 # Set HTS_DEBUG_FRAMES=<dir> to save ~2 raw frames/sec per player (filename has the status)
 DEBUG_FRAME_DIR      = os.environ.get('HTS_DEBUG_FRAMES')
@@ -313,14 +314,22 @@ def _owns(player, ws) -> bool:
     return player is not None and player.ws is ws and game.players.get(player.player_id) is player
 
 
+async def _send_host(ws, data: dict) -> bool:
+    try:
+        await asyncio.wait_for(ws.send_json(data), HOST_SEND_TIMEOUT_S)
+        return True
+    except Exception:
+        return False
+
+
 async def _broadcast_host(data: dict):
-    dead = set()
+    # Each with a time limit: a host screen that stopped reading (a spectator's
+    # phone locked or out of Wi-Fi) would otherwise hold up the match itself
+    # (_state_broadcaster).  It's hung up on, so it reconnects.
     for ws in list(host_sockets):
-        try:
-            await ws.send_json(data)
-        except Exception:
-            dead.add(ws)
-    host_sockets.difference_update(dead)
+        if not await _send_host(ws, data) and ws in host_sockets:
+            host_sockets.discard(ws)
+            asyncio.ensure_future(ws.close())
 
 
 # ── WebSocket — Phone ─────────────────────────────────────────────────────────
@@ -336,6 +345,7 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
     tag_memory: dict[int, tuple[dict, float]] = {}   # tag id -> (tag, last seen)
     last_ready_at = 0.0                              # last frame with a finger-gun pose
     last_aim: tuple[int, float] | None = None        # (tag id, when) last aimed at
+    seen_deaths = 0                                  # player.deaths at the last frame
     claps = ClapTracker()                            # clap = reload, seen across frames
     people = PeopleMatcher()                         # who's who in this phone's camera (ID_MODE 'clothes')
     memory_s = TAG_MEMORY_S if ID_MODE == 'tags' else PERSON_MEMORY_S
@@ -430,13 +440,16 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                 # One-handed only: your second hand in view cancels any pose/aim
                 # in progress, so the two hands can't combine into a shot.
                 two_hands = len(det['own_palms']) >= 2
-                # Being down cancels them too: an aim from before you died must
-                # not fire the moment you respawn
-                if two_hands or not player.alive:
+                # Being down cancels them too, and nothing seen while down counts:
+                # an aim from before you died must not fire the moment you respawn
+                # (which can be before your next frame, when shot in your own base)
+                down = not player.alive or player.deaths != seen_deaths
+                seen_deaths = player.deaths
+                if two_hands or down:
                     last_ready_at, last_aim = 0.0, None
-                if det['ready']:
+                if det['ready'] and not down:
                     last_ready_at = now
-                if tag:
+                if tag and not down:
                     last_aim = (tag['id'], now)
                 elif det.get('aimed_unknown'):
                     # Now pointing at someone not recognised: the aim at whoever
@@ -660,6 +673,8 @@ async def ws_host(request: web.Request) -> web.WebSocketResponse:
                 try:
                     data = json.loads(msg.data)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
                     continue
                 t = data.get('type')
                 if t == 'start_game':

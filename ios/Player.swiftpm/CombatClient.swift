@@ -244,6 +244,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         case "two_hands": return "Shoot with one hand"
         case "no_tag_visible": return "Ready · no tag in view"
         case "not_aimed": return "Ready · point at the tag"
+        case "not_identified": return "Can't tell who that is yet · keep pointing"
         case "pose_not_ready": return "Aiming at \(target ?? 0) · curl middle/ring to fire"
         case "target_dead": return "Player \(target ?? 0) is already down"
         case "same_team": return "Player \(target ?? 0) is on your team"
@@ -304,6 +305,8 @@ final class ClapDetector {
         do {
             // Raw audio: voice processing would soften exactly the sharp clap we listen for.
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .mixWithOthers])
+            // While the mic is on, iOS mutes vibrations unless they're allowed: hits must be felt too.
+            try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
             try session.setActive(true)
         } catch {
             state = "audio error"
@@ -317,7 +320,9 @@ final class ClapDetector {
     }
 
     func stop() {
-        guard engine.isRunning else { return }
+        // Not engine.isRunning: a phone call or new headphones stop the engine but leave the tap on,
+        // and installing a second one raises (crashes) on the next start.
+        guard state == "listening" else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         state = "off"

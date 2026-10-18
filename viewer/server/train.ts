@@ -43,6 +43,7 @@ async function pump() {
 }
 
 function train(id: string): Promise<void> {
+  if (!getMap(id)) return Promise.resolve(); // deleted while it waited in the queue
   if (!fs.existsSync(BRUSH_BIN)) throw new Error(`Brush not found at ${BRUSH_BIN}. Run tools/setup.sh`);
   const dir = mapDir(id);
   const dataset = path.join(dir, "dataset");
@@ -50,7 +51,8 @@ function train(id: string): Promise<void> {
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
 
-  updateMap(id, { status: "training", progress: 0, error: undefined });
+  // The old previews were just deleted: don't point viewers at them.
+  updateMap(id, { status: "training", progress: 0, splatFile: null, error: undefined });
   console.log(`[train] ${id}: ${TOTAL_STEPS} steps`);
 
   const args = [
@@ -82,7 +84,11 @@ function train(id: string): Promise<void> {
     // Keep the previous preview around in case a viewer is still downloading it.
     for (const old of files.slice(0, -2)) fs.rmSync(path.join(outDir, old), { force: true });
   };
-  const poll = setInterval(() => publishLatest(false), 1000);
+  const poll = setInterval(() => {
+    // Deleted while training: stop Brush (its folder is gone, and it would hold up the queue).
+    if (!getMap(id)) proc.kill();
+    else publishLatest(false);
+  }, 1000);
 
   let lastLines: string[] = [];
   let lastProgressWrite = 0;
@@ -104,6 +110,7 @@ function train(id: string): Promise<void> {
     proc.on("error", reject);
     proc.on("close", (code) => {
       clearInterval(poll);
+      if (!getMap(id)) return resolve();
       if (code !== 0) {
         console.error(lastLines.join("\n"));
         return reject(new Error(`Brush exited with code ${code}: ${lastLines.at(-1) ?? ""}`));

@@ -38,6 +38,10 @@ function onMessage(msg) {
     view.setMap(map);
     updateInfo();
     updateScanLock();
+  } else if (msg.t === 'map') {
+    // The bases and flag only change on the server (the 3D viewer places them): show its latest.
+    map.points = msg.map.points;
+    view.setMap(map);
   } else if (msg.t === 'state') {
     players = msg.players;
     view.players = players;
@@ -238,10 +242,10 @@ function renderPlayers() {
   const html = players.length ? players.map((p) => {
     const status = !p.calibrated ? 'not placed yet' : `±${p.spread.toFixed(1)} m${p.lost ? ` · ${p.lost} wall misses` : ''}`;
     const sensors = `${p.platform} · ${p.source}${p.compass ? ' · compass' : ''}`;
-    return `<div class="player ${p.id === selectedId ? 'sel' : ''}" data-id="${p.id}">
+    return `<div class="player ${p.id === selectedId ? 'sel' : ''}" data-id="${escapeHtml(p.id)}">
       <div class="top"><span class="dot ${p.connected ? 'on' : ''}"></span>
         <span class="swatch" style="background:${playerColor(p)}"></span>${escapeHtml(p.name)}
-        <button data-remove="${p.id}" title="Forget this player">✕</button></div>
+        <button data-remove="${escapeHtml(p.id)}" title="Forget this player">✕</button></div>
       <div class="muted">${escapeHtml(sensors)}</div>
       <div class="muted">${p.steps} steps · ${status}</div></div>`;
   }).join('') : '<p class="muted">No phones connected yet.</p>';

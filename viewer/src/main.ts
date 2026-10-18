@@ -15,7 +15,7 @@ import { PlayerLayer, playerColor } from "./players.ts";
 import { ObjectiveLayer, SLOTS } from "./points.ts";
 import { TracerLayer } from "./tracers.ts";
 import {
-  type MapsState, renderMapList, setHud, setStatus, setupConnectPanel, setupUploads, subscribeMaps,
+  type MapsState, escapeHtml, renderMapList, setHud, setStatus, setupConnectPanel, setupUploads, subscribeMaps,
 } from "./ui.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
@@ -143,7 +143,8 @@ function syncGameMap() {
   publishGameMap(game.map, map, mesh, transform)
     .then((next) => {
       if (!next) return;
-      game.map = next;
+      // The server's own copy may be here already, with a base or flag the host moved meanwhile.
+      if (!isLinked(game.map, map, transform)) game.map = next;
       if (fresh) feed.push(`Game map is now "${map.name}"`, "#ffd34d");
     })
     .catch((err) => console.error("couldn't update the game map", err))
@@ -165,18 +166,19 @@ function onState(next: MapsState) {
   state = next;
   renderMapList(state);
   const active = state.maps.find((m) => m.id === state.activeId) ?? null;
+  const name = escapeHtml(active?.name ?? "");
   updateAdjustPanel();
 
   if (!active) {
     setStatus("No map yet.<br>Scan one with the phone app (QR code, top right) or drop a .ply/.spz here.");
   } else if (active.status === "failed") {
-    setStatus(`Training <b>${active.name}</b> failed.<br><small>${active.error ?? ""}</small>`);
+    setStatus(`Training <b>${name}</b> failed.<br><small>${escapeHtml(active.error ?? "")}</small>`);
   } else if (!active.splatFile) {
     const pct = Math.round(active.progress * 100);
     setStatus(
       active.status === "uploaded"
-        ? `Scan <b>${active.name}</b> received. Waiting to train…`
-        : `Training <b>${active.name}</b>… ${pct}%<br><small>A first preview appears in about a minute.</small>`,
+        ? `Scan <b>${name}</b> received. Waiting to train…`
+        : `Training <b>${name}</b>… ${pct}%<br><small>A first preview appears in about a minute.</small>`,
     );
   } else if (active.status === "training") {
     setStatus(`Training ${Math.round(active.progress * 100)}% · the map sharpens as it trains`, true);
@@ -185,6 +187,7 @@ function onState(next: MapsState) {
   }
 
   if (!active?.splatFile) {
+    loadingKey = null; // a load of another map still on its way is not wanted any more
     if (current && current.map.id !== active?.id) {
       scene.remove(current.mesh);
       current.mesh.dispose();
@@ -194,6 +197,7 @@ function onState(next: MapsState) {
   }
   const key = keyOf(active);
   if (current && keyOf(current.map) === key) {
+    loadingKey = null; // e.g. the host clicked another map and came back before it loaded
     if (active.transform && JSON.stringify(active.transform) !== JSON.stringify(current.map.transform)) {
       applyTransform(current.mesh, active.transform);
     }
@@ -251,6 +255,7 @@ function spectate(id: string) {
   if (!players.pose(id)) return;
   followId = id;
   placing = null;
+  updatePlacingHint();
   controls.follow(() => players.pose(id));
   feed.push(`Watching ${nameOf(id)} · V: over the shoulder · WASD: take over`);
 }
@@ -258,6 +263,7 @@ function spectate(id: string) {
 function startPlacing(id: string) {
   selectedId = players.selectedId = id;
   placing = { id, at: null };
+  placingObjective = null; // else the next click would drop the base or flag instead
   controls.setMode("overview");
   updatePlacingHint();
 }

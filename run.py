@@ -9,6 +9,7 @@ import datetime
 import importlib.util
 import ipaddress
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -97,6 +98,9 @@ def main():
     print(f"  Phones:    {scheme}://{ip}:{args.port}/web/phone.html")
     print(f"  Player app server address: {ip}:{args.port}\n")
     combat = None if args.no_combat else start_combat(args.combat_port, f"{scheme}://127.0.0.1:{args.port}")
+    # uvicorn re-raises a SIGTERM once it has shut down, which would kill us before the `finally`
+    # and leave the shooting server running, holding its ports. Exit normally instead.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         uvicorn.run("server.main:app", host="0.0.0.0", port=args.port, log_level="warning", **ssl)
     finally:

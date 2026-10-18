@@ -188,7 +188,8 @@ try:
     # Every allowed player ID must have a printable tag, or that player could never be shot
     from tag_detector import MAX_PLAYER_ID, TAG_FAMILY
     import pupil_apriltags
-    ncodes = pupil_apriltags.Detector(families=TAG_FAMILY).tag_families[TAG_FAMILY].contents.ncodes
+    detector = pupil_apriltags.Detector(families=TAG_FAMILY)  # kept alive: freeing it frees the family struct
+    ncodes = detector.tag_families[TAG_FAMILY].contents.ncodes
     check(f"player IDs 1-{MAX_PLAYER_ID} all have a tag in {TAG_FAMILY} ({ncodes} codes)",
           lambda: MAX_PLAYER_ID == min(99, ncodes - 1))
 

@@ -23,7 +23,7 @@ IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 DEFAULT_MAP = {"width": 40.0, "height": 30.0, "image": None, "walls": [], "points": []}
 BROADCAST_HZ = 20
 HOST_PARTICLES = 120
-SEND_TIMEOUT_S = 1.0
+SILENT_S = 5.0  # a phone not heard from this long is gone (screen locked, out of Wi-Fi), even if its socket isn't closed yet
 TEAMS = ("red", "blue")
 MAX_TAG = 34  # player bibs are tag25h9 AprilTags 1-34, the IDs the shooting server (combat/) uses
 POINT_RADIUS = (0.5, 10.0)  # m
@@ -42,6 +42,7 @@ class Player:
     truth: list | None = None  # ground truth from the simulator, for tuning
     tag: int | None = None  # number on the player's chest tag: their ID on the shooting server
     team: str | None = None
+    heard_at: float = field(default_factory=time.monotonic)
 
     def to_json(self, with_particles: bool) -> dict:
         f, t, now = self.fusion, self.fusion.tracker, time.monotonic()
@@ -49,7 +50,8 @@ class Player:
             "id": self.id,
             "name": self.name,
             "platform": self.platform,
-            "connected": self.connected,
+            # A frozen phone's last position mustn't keep counting (e.g. holding the flag).
+            "connected": self.connected and now - self.heard_at < SILENT_S,
             "tag": self.tag,
             "team": self.team,
             "calibrated": t.calibrated,
@@ -70,31 +72,61 @@ class Player:
         return d
 
 
+class Outbox:
+    """What's waiting to go out to one WebSocket: the latest message of each kind ("state",
+    "map"), since each replaces the last. Its own task sends them, so a phone that stops reading
+    (its screen locked, or it walked out of Wi-Fi) holds up only itself, not everyone's updates."""
+
+    def __init__(self, ws: WebSocket):
+        self.ws = ws
+        self.pending: dict[str, str] = {}
+        self.ready = asyncio.Event()
+        self.closing = False
+        self.task = asyncio.create_task(self._run())
+
+    def put(self, kind: str, text: str) -> None:
+        self.pending[kind] = text
+        self.ready.set()
+
+    def hang_up(self) -> None:
+        self.closing = True
+        self.ready.set()
+
+    async def _run(self) -> None:
+        try:
+            while not self.closing:
+                await self.ready.wait()
+                self.ready.clear()
+                while self.pending and not self.closing:
+                    await self.ws.send_text(self.pending.pop(next(iter(self.pending))))
+            await self.ws.close()
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            pass  # the socket closed; its handler cleans up
+
+
 class Game:
     def __init__(self):
         DATA.mkdir(exist_ok=True)
         self.map = json.loads(MAP_FILE.read_text()) if MAP_FILE.exists() else dict(DEFAULT_MAP)
-        self.walls = self._walls_array()
+        self.walls = walls_array(self.map)
         self.players: dict[str, Player] = {}
         self.hosts: set[WebSocket] = set()
         self.phones: dict[WebSocket, str] = {}
         self.watchers: set[WebSocket] = set()  # read-only: the shooting server, for positions and objectives
-
-    def _walls_array(self) -> np.ndarray:
-        return np.array(self.map["walls"], dtype=float).reshape(-1, 4)
+        self.outboxes: dict[WebSocket, Outbox] = {}
 
     def set_map(self, new_map: dict) -> None:
-        self.map = new_map
-        self.walls = self._walls_array()
+        walls = walls_array(new_map)  # first, so a bad map is refused rather than half taken
+        self.map, self.walls = new_map, walls
         MAP_FILE.write_text(json.dumps(new_map))
 
-    async def broadcast(self, msg: dict, hosts=True, phones=True) -> None:
+    def broadcast(self, msg: dict, hosts=True, phones=True) -> None:
         """phones: the phones and the watchers, which get the same particle-free updates."""
         targets = (list(self.hosts) if hosts else []) + (list(self.phones) + list(self.watchers) if phones else [])
         text = json.dumps(msg)
-        # A phone that stops reading (e.g. its screen locked) mustn't stall updates to everyone else.
-        await asyncio.gather(*(asyncio.wait_for(ws.send_text(text), SEND_TIMEOUT_S) for ws in targets),
-                             return_exceptions=True)
+        for ws in targets:
+            if ws in self.outboxes:
+                self.outboxes[ws].put(msg["t"], text)
 
     async def broadcast_loop(self) -> None:
         while True:
@@ -102,10 +134,8 @@ class Game:
             if not (self.hosts or self.phones or self.watchers):
                 continue
             players = list(self.players.values())
-            await self.broadcast(
-                {"t": "state", "players": [p.to_json(True) for p in players]}, phones=False)
-            await self.broadcast(
-                {"t": "state", "players": [p.to_json(False) for p in players]}, hosts=False)
+            self.broadcast({"t": "state", "players": [p.to_json(True) for p in players]}, phones=False)
+            self.broadcast({"t": "state", "players": [p.to_json(False) for p in players]}, hosts=False)
 
     def handle_phone(self, pid: str, msg: dict) -> None:
         f, kind, now = self.players[pid].fusion, msg.get("t"), time.monotonic()
@@ -128,10 +158,19 @@ class Game:
             p.fusion.calibrate(float(msg["x"]), float(msg["y"]), float(msg["mapHeading"]), time.monotonic())
         elif kind == "remove" and p:
             del self.players[p.id]
+            # Hang up on their phone too: it reconnects and joins afresh, rather than carrying on
+            # unheard (the server ignores players it doesn't know).
+            for ws, pid in self.phones.items():
+                if pid == p.id and ws in self.outboxes:
+                    self.outboxes[ws].hang_up()
         elif kind == "points":
             # Bases and flag the host marked on the map, replaced as a whole.
             self.set_map({**self.map, "points": clean_points(msg.get("points"))})
-            await self.broadcast({"t": "map", "map": self.map})
+            self.broadcast({"t": "map", "map": self.map})
+
+
+def walls_array(m: dict) -> np.ndarray:
+    return np.array(m["walls"], dtype=float).reshape(-1, 4)
 
 
 def num(v) -> float | None:
@@ -202,12 +241,17 @@ def get_map():
 @app.put("/api/map")
 async def put_map(request: Request):
     new_map = await request.json()
+    if not isinstance(new_map, dict):
+        raise HTTPException(400, "Expected a map object")
     # Objectives (bases, flag) only change through the host's "points" message: pages that save the map
     # (walls on the 2D host page) may hold an old copy of them. The viewer clears them when the
     # map's frame changes (a new scan, flip or rotate), since they'd no longer line up.
     new_map["points"] = [] if new_map.pop("pointsReset", False) else game.map.get("points", [])
-    game.set_map(new_map)
-    await game.broadcast({"t": "map", "map": new_map})
+    try:
+        game.set_map(new_map)
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "Walls must be a list of [x1, y1, x2, y2]")
+    game.broadcast({"t": "map", "map": new_map})
     return {"ok": True}
 
 
@@ -233,10 +277,10 @@ def get_image():
 @app.websocket("/ws")
 async def websocket(ws: WebSocket):
     await ws.accept()
-    hello = await ws.receive_json()
-    role = hello.get("role")
     pid = None
     try:
+        hello = await ws.receive_json()
+        role = hello.get("role")
         if role == "host":
             game.hosts.add(ws)
         elif role == "watch":
@@ -248,22 +292,30 @@ async def websocket(ws: WebSocket):
             p.name, p.connected = name, True
             p.platform = str(hello.get("platform", "web"))
             p.tag, p.team = parse_tag(hello.get("tag")), parse_team(hello.get("team"))
+            p.heard_at = time.monotonic()
             game.players[pid] = p
             game.phones[ws] = pid
-        await ws.send_json({"t": "map", "map": game.map})
+        game.outboxes[ws] = Outbox(ws)
+        game.outboxes[ws].put("map", json.dumps({"t": "map", "map": game.map}))
 
         while True:
             msg = await ws.receive_json()
-            if role == "host":
-                await game.handle_host(msg)
-            elif pid in game.players:
-                game.handle_phone(pid, msg)
+            try:
+                if role == "host":
+                    await game.handle_host(msg)
+                elif pid in game.players:
+                    game.players[pid].heard_at = time.monotonic()
+                    game.handle_phone(pid, msg)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                continue  # a malformed message: skip it rather than drop the connection
     except WebSocketDisconnect:
         pass
     finally:
         game.hosts.discard(ws)
         game.watchers.discard(ws)
         game.phones.pop(ws, None)
+        if outbox := game.outboxes.pop(ws, None):
+            outbox.task.cancel()
         if pid in game.players and pid not in game.phones.values():
             game.players[pid].connected = False
 

@@ -47,7 +47,15 @@ final class GameClient: NSObject, CLLocationManagerDelegate {
     /// tag: the number on your chest tag (1–34), which the shooting server knows you by.
     func connect(server: String, name: String, tag: Int, team: String) {
         let address = server.trimmingCharacters(in: .whitespaces)
-        guard let url = URL(string: address.contains("://") ? address : "wss://\(address)/ws") else {
+        var components = URLComponents(string: address.contains("://") ? address : "wss://\(address)/ws")
+        // WebSocket tasks raise (crash) on any scheme but lower-case ws/wss. An http(s) address,
+        // like the page links run.py prints, means the game server's socket.
+        switch components?.scheme?.lowercased() {
+        case let scheme? where scheme == "ws" || scheme == "wss": components?.scheme = scheme
+        case "http": components?.scheme = "ws"; components?.path = "/ws"
+        default: components?.scheme = "wss"; components?.path = "/ws"
+        }
+        guard let url = components?.url, url.host?.isEmpty == false else {
             error = "Bad server address"
             return
         }
@@ -134,15 +142,21 @@ final class WebSocketLink: NSObject, URLSessionDelegate {
     var onConnected: ((Bool) -> Void)?
     var onMessage: (([String: Any]) -> Void)?
 
+    /// A link that hears nothing, not even a pong, for this long is opened again: one that
+    /// dropped off the Wi-Fi without closing never fails by itself.
+    private static let silence = 6.0
+
     private var session: URLSession!
     private var task: URLSessionWebSocketTask?
     private var url: URL?
     private var hello: [String: Any] = [:]
     private var connected = false
+    private var lastHeard = 0.0
 
     override init() {
         super.init()
         session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.keepAlive() }
     }
 
     func connect(url: URL, hello: [String: Any]) {
@@ -172,13 +186,15 @@ final class WebSocketLink: NSObject, URLSessionDelegate {
         guard let url else { return }
         let t = session.webSocketTask(with: url)
         task = t
+        lastHeard = ProcessInfo.processInfo.systemUptime
         t.resume()
         write(hello)
         receive(t)
     }
 
     private func write(_ msg: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: msg),
+        // A NaN or infinite number makes JSONSerialization raise, which try? can't catch: a crash.
+        guard JSONSerialization.isValidJSONObject(msg), let data = try? JSONSerialization.data(withJSONObject: msg),
               let text = String(data: data, encoding: .utf8) else { return }
         task?.send(.string(text)) { _ in }
     }
@@ -188,6 +204,7 @@ final class WebSocketLink: NSObject, URLSessionDelegate {
             guard let self, t === self.task else { return }
             switch result {
             case .success(let message):
+                lastHeard = ProcessInfo.processInfo.systemUptime
                 setConnected(true)
                 if case .string(let text) = message,
                    let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] {
@@ -195,12 +212,29 @@ final class WebSocketLink: NSObject, URLSessionDelegate {
                 }
                 receive(t)
             case .failure:
-                setConnected(false)
-                task = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                    if let self, task == nil { open() }
-                }
+                reconnect()
             }
+        }
+    }
+
+    private func reconnect() {
+        setConnected(false)
+        task = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            if let self, task == nil { open() }
+        }
+    }
+
+    /// Every 2 s: pings the server, or opens the link again if it has gone quiet.
+    private func keepAlive() {
+        guard let t = task else { return }
+        guard ProcessInfo.processInfo.systemUptime - lastHeard < Self.silence else {
+            t.cancel(with: .goingAway, reason: nil)
+            reconnect()
+            return
+        }
+        t.sendPing { [weak self] error in
+            if error == nil, let self, t === task { lastHeard = ProcessInfo.processInfo.systemUptime }
         }
     }
 

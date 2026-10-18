@@ -102,3 +102,52 @@ def test_saving_the_map_keeps_objectives_unless_reset(client):
     saved = client.get("/api/map").json()
     assert saved["points"] == []
     assert "pointsReset" not in saved
+
+
+def test_bad_map_is_refused_and_the_old_one_kept(client):
+    before = client.get("/api/map").json()
+    assert client.put("/api/map", json={**before, "walls": [[1, 2, 3]]}).status_code == 400
+    assert client.put("/api/map", json=[1, 2]).status_code == 400
+    assert client.get("/api/map").json() == before
+
+
+def test_a_malformed_message_is_skipped_not_fatal(client):
+    with client.websocket_connect("/ws") as watcher, client.websocket_connect("/ws") as phone:
+        watcher.send_json({"role": "watch"})
+        phone.send_json({"role": "player", "id": "p1", "name": "Ana"})
+        phone.send_json({"t": "pose"})
+        phone.send_json({"t": "step", "heading": 0, "len": None})
+        phone.send_json({"t": "calibrate", "x": 4, "y": 5, "mapHeading": 0})
+        while True:
+            players = next_msg(watcher, "state")["players"]
+            if players and players[0]["calibrated"]:
+                break
+
+
+def test_a_silent_phone_stops_counting_as_connected(client, monkeypatch):
+    monkeypatch.setattr(main, "SILENT_S", 0.3)
+    with client.websocket_connect("/ws") as watcher, client.websocket_connect("/ws") as phone:
+        watcher.send_json({"role": "watch"})
+        phone.send_json({"role": "player", "id": "p1", "name": "Ana"})
+        while True:  # e.g. its screen locked: the socket stays open but nothing comes from it
+            players = next_msg(watcher, "state")["players"]
+            if players and not players[0]["connected"]:
+                break
+        phone.send_json({"t": "heading", "gyro": 10})
+        while True:
+            players = next_msg(watcher, "state")["players"]
+            if players[0]["connected"]:
+                break
+
+
+def test_removing_a_connected_player_hangs_up_on_them(client):
+    from starlette.websockets import WebSocketDisconnect
+    with client.websocket_connect("/ws") as host, client.websocket_connect("/ws") as phone:
+        host.send_json({"role": "host"})
+        phone.send_json({"role": "player", "id": "p1", "name": "Ana"})
+        while not next_msg(host, "state")["players"]:
+            pass
+        host.send_json({"t": "remove", "id": "p1"})
+        with pytest.raises(WebSocketDisconnect):  # so the app reconnects and joins afresh
+            for _ in range(200):
+                phone.receive_json()

@@ -138,6 +138,7 @@ struct ContentView: View {
         }
         joinError = nil
         client.connect(server: server, name: name.isEmpty ? "iPhone" : name, tag: tag, team: team)
+        guard client.error == nil else { return }  // e.g. a bad address: shown here on the join screen
         combat.connect(server: server, tag: tag, team: team)
         joined = true
     }

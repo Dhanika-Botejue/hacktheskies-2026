@@ -42,8 +42,11 @@ def put_demo_map(base: str):
 
 async def drain(ws):
     """Read (and ignore) the server's updates; an unread socket stalls and times out."""
-    async for _ in ws:
-        pass
+    try:
+        async for _ in ws:
+            pass
+    except websockets.ConnectionClosed:
+        pass  # whoever sends on it notices too
 
 
 def team_of(idx: int) -> str:
@@ -63,24 +66,34 @@ async def fighter(url: str, idx: int):
 
 
 async def player(url: str, idx: int, trouble: bool, teams: bool):
+    """Walk the path lap after lap. If the server drops us (restarted, or the host removed this
+    player), rejoin like a phone does and start the lap over, which places the player again."""
     path = DEMO_PATH if idx % 2 == 0 else list(reversed(DEMO_PATH))
-    async with websockets.connect(url, ssl=insecure_ssl() if url.startswith("wss") else None) as ws:
-        hello = {"role": "player", "id": f"sim-{idx}", "name": f"Sim {idx}", "platform": "sim"}
-        if teams:
-            hello.update(tag=idx + 1, team=team_of(idx))
-        await ws.send(json.dumps(hello))
-        asyncio.create_task(drain(ws))
-        lap = 0
-        while True:
-            extra = TROUBLE[lap % len(TROUBLE)] if trouble else {}
-            start = time.monotonic()
-            for t, kind, data in simulate_session(path, seed=idx * 1000 + lap, **extra):
-                delay = start + t - time.monotonic()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                await ws.send(json.dumps({"t": kind, **data}))
-            await asyncio.sleep(2)
-            lap += 1
+    hello = {"role": "player", "id": f"sim-{idx}", "name": f"Sim {idx}", "platform": "sim"}
+    if teams:
+        hello.update(tag=idx + 1, team=team_of(idx))
+    lap = 0
+    while True:
+        try:
+            async with websockets.connect(url, ssl=insecure_ssl() if url.startswith("wss") else None) as ws:
+                await ws.send(json.dumps(hello))
+                reader = asyncio.create_task(drain(ws))
+                try:
+                    while True:
+                        extra = TROUBLE[lap % len(TROUBLE)] if trouble else {}
+                        start = time.monotonic()
+                        for t, kind, data in simulate_session(path, seed=idx * 1000 + lap, **extra):
+                            delay = start + t - time.monotonic()
+                            if delay > 0:
+                                await asyncio.sleep(delay)
+                            await ws.send(json.dumps({"t": kind, **data}))
+                        await asyncio.sleep(2)
+                        lap += 1
+                finally:
+                    reader.cancel()
+        except (OSError, websockets.WebSocketException) as exc:
+            print(f"Sim {idx}: game server at {url} dropped or not reachable ({exc}), rejoining")
+        await asyncio.sleep(2)
 
 
 async def main():

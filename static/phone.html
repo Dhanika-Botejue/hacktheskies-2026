@@ -11,7 +11,7 @@
 
     /* ── Setup ──────────────────────────────────────────────────── */
     #setup{display:flex;flex-direction:column;gap:14px;padding:28px;
-           width:100%;max-width:400px;margin:auto}
+           width:100%;max-width:400px;margin:auto;max-height:100dvh;overflow-y:auto}
     #setup h1{text-align:center;font-size:1.8rem}
     #setup p{text-align:center;opacity:.5;font-size:.85rem}
     label{font-size:.8rem;opacity:.6;margin-bottom:-8px}
@@ -24,6 +24,13 @@
     #game{display:none;width:100%;height:100dvh;position:relative}
     video{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
     canvas#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+
+    /* Everything drawn over the camera.  The phone is strapped on sideways, and
+       with rotation lock on the browser won't turn the page: layoutUI() then
+       sizes this box to the swapped screen and rotates it upright.  The video
+       stays put (a viewfinder always shows the world the right way up). */
+    #ui{position:absolute;left:50%;top:50%;width:100%;height:100%;z-index:1;
+        transform:translate(-50%,-50%)}
 
     /* HUD */
     #hud{position:absolute;top:0;left:0;right:0;
@@ -87,6 +94,16 @@
           align-items:center;justify-content:center;font-size:1.3rem;
           font-weight:600;opacity:.8;z-index:20;text-align:center;padding:24px}
     #idle.show{display:flex}
+
+    /* Landscape (on the chest): a shorter bottom bar, two columns side by side */
+    #ui.landscape #hud{padding:6px 14px}
+    #ui.landscape #bar{display:grid;grid-template-columns:1fr 1fr;align-items:center;
+                       gap:2px 14px;padding:6px 14px 8px}
+    #ui.landscape #tgt{grid-column:1;grid-row:1 / 3;margin-bottom:0}
+    #ui.landscape .pose-row{grid-column:2;grid-row:1}
+    #ui.landscape #checks{grid-column:2;grid-row:2;margin-top:0}
+    #ui.landscape #shot-log{grid-column:1 / -1;margin-top:2px}
+    #ui.landscape #tap-audio{bottom:84px}
   </style>
 </head>
 <body>
@@ -94,7 +111,8 @@
 <!-- ── Setup screen ───────────────────────────────────────── -->
 <div id="setup">
   <h1>🔫 HackTheSkies</h1>
-  <p>Strap your phone to your chest, rear camera facing out.<br>
+  <p>Strap your phone to your chest, rear camera facing out
+     (upright or sideways: the screen turns to match).<br>
      Make a finger gun with one hand and point it at a tag.<br>
      After every hit, clap loudly near the phone to reload (allow the microphone).</p>
 
@@ -117,6 +135,7 @@
 <div id="game">
   <video id="vid" autoplay playsinline muted></video>
   <canvas id="ov"></canvas>
+  <div id="ui">
   <div id="tap-audio">🔊 Tap here to turn on sound + clap mic</div>
 
   <div id="hud">
@@ -163,6 +182,7 @@
     <div id="checks">no hand</div>
     <div id="shot-log"></div>
   </div>
+  </div>
 </div>
 
 <script>
@@ -200,6 +220,7 @@ const $score    = document.getElementById('score-hud');
 const $micLbl   = document.getElementById('mic-lbl');
 const $tapAudio = document.getElementById('tap-audio');
 const $pidLbl   = document.getElementById('pid-label');
+const $ui       = document.getElementById('ui');
 
 // ─── Setup ────────────────────────────────────────────────────────────────
 // Pre-fill: server = whoever served this page; pid/team from ?pid=&team= or last session.
@@ -228,6 +249,9 @@ document.getElementById('go').addEventListener('click', async () => {
   }
   joining = true;
   unlockAudio();
+  // iPhone: the motion-sensor prompt must come straight from the tap.  (Like the
+  // beep below, this runs before the rest of the script on auto-join.)
+  try { startOrientation(); } catch {}
   // Sound check: a beep on Join if audio works.  (Auto-join via ?pid= runs before
   // the sound code below has loaded, so this must not be allowed to throw.)
   try { sfx.ready(); } catch {}
@@ -253,6 +277,7 @@ document.getElementById('go').addEventListener('click', async () => {
 
   $setup.style.display = 'none';
   $game.style.display  = 'block';
+  applyOrientation();
   renderHp(3, 3);
 
   connectWS(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${srv}/ws/phone`);
@@ -529,7 +554,10 @@ function unlockAudio() {
   } catch {}
 }
 // Any tap (re)starts audio; the banner goes away once audio is really running
-document.addEventListener('pointerdown', () => { unlockAudio(); setTimeout(checkAudioReady, 300); });
+document.addEventListener('pointerdown', () => {
+  unlockAudio(); setTimeout(checkAudioReady, 300);
+  if (joining) startOrientation();   // auto-join (page refresh) had no tap to ask with
+});
 
 function checkAudioReady() {
   const running = audioCtx && audioCtx.state === 'running';
@@ -743,6 +771,68 @@ function triggerFlash(colour, msg) {
   $shotLog.textContent = msg + '  ' + new Date().toLocaleTimeString();
 }
 
+// ─── Screen orientation ───────────────────────────────────────────────────
+// Players sign in holding the phone upright, then strap it sideways across the
+// chest.  With auto-rotate on, the browser turns the page itself and the HUD
+// just switches to its landscape layout.  With rotation lock on it doesn't, so
+// the motion sensor tells us which way is up and we turn the HUD ourselves.
+const ORIENT_SETTLE_MS = 500;   // hold a new way up this long before turning (strapping on jiggles)
+let physAngle = 0;              // which way the phone is held: 0 upright, 90 top to the left, 270 top to the right
+let uiRot     = 0;              // clockwise turn applied to the HUD
+let tiltCandidate = null, tiltSince = 0;
+let orientState = 'off';        // 'off' | 'asking' | 'on' | 'denied'
+
+function startOrientation() {
+  if (orientState !== 'off' || !window.DeviceOrientationEvent) return;
+  const listen = () => { orientState = 'on'; addEventListener('deviceorientation', onTilt); };
+  if (typeof DeviceOrientationEvent.requestPermission !== 'function') { listen(); return; }   // Android
+  orientState = 'asking';
+  DeviceOrientationEvent.requestPermission()
+    .then(s => s === 'granted' ? listen() : (orientState = 'denied'))
+    .catch(() => { orientState = 'off'; });   // not from a tap: ask again on the next one
+}
+
+function onTilt(e) {
+  if (e.beta == null || e.gamma == null) return;
+  // "Up" in the plane of the screen, in the phone's own axes (x right, y top)
+  const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+  const ux = -Math.cos(b) * Math.sin(g), uy = Math.sin(b);
+  const deg  = (Math.atan2(ux, uy) * 180 / Math.PI + 360) % 360;
+  const snap = Math.round(deg / 90) % 4 * 90;
+  // Lying flat, or tilted halfway between two sides: can't tell, keep the current way
+  if (Math.hypot(ux, uy) < 0.5 || Math.abs((deg - snap + 540) % 360 - 180) > 30) {
+    tiltCandidate = null; return;
+  }
+  const now = performance.now();
+  if (snap !== tiltCandidate) { tiltCandidate = snap; tiltSince = now; }
+  if (snap !== physAngle && now - tiltSince >= ORIENT_SETTLE_MS) { physAngle = snap; applyOrientation(); }
+}
+
+function screenAngle() {   // how far the browser has already turned the page
+  const a = screen.orientation ? screen.orientation.angle : (window.orientation || 0);
+  return (a % 360 + 360) % 360;
+}
+
+function applyOrientation() {
+  // Page already the same shape as the phone is held: the browser turned it (or nothing turned)
+  const viewLandscape = innerWidth > innerHeight, physLandscape = physAngle % 180 !== 0;
+  uiRot = viewLandscape === physLandscape ? 0 : (physAngle - screenAngle() + 360) % 360;
+  layoutUI();
+}
+addEventListener('resize', applyOrientation);
+if (screen.orientation) screen.orientation.addEventListener('change', applyOrientation);
+
+function layoutUI() {
+  const w = $game.clientWidth, h = $game.clientHeight;
+  if (!w || !h) return;   // still on the setup screen
+  const sideways = uiRot % 180 !== 0;
+  const uw = sideways ? h : w, uh = sideways ? w : h;
+  $ui.style.width     = uw + 'px';
+  $ui.style.height    = uh + 'px';
+  $ui.style.transform = `translate(-50%,-50%) rotate(${uiRot}deg)`;
+  $ui.classList.toggle('landscape', uw > uh);
+}
+
 // ─── Canvas overlay ───────────────────────────────────────────────────────
 // Draws hand skeleton dots + aim ray + tag bounding box.
 // The <video> uses object-fit:cover, so map frame coords through the same
@@ -802,6 +892,9 @@ function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
 
   // Every detected tag: white box + ID; the aimed-at one in red (camera-pixel coords).
   // Dashed = not seen this frame, held at its last position for a moment.
+  // The ID label sits above the tag and reads upright the way the HUD is turned.
+  const rot = uiRot * Math.PI / 180, upX = Math.sin(rot), upY = -Math.cos(rot);
+  const height = ([x, y]) => x * upX + y * upY;
   for (const t of tagsSeen || []) {
     const isAimed = t.id === aimedId;
     ctx.strokeStyle = isAimed ? 'rgba(239,68,68,0.95)' : 'rgba(255,255,255,0.85)';
@@ -812,10 +905,14 @@ function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
     ctx.closePath();
     ctx.stroke();
     ctx.setLineDash([]);
-    const [lx, ly] = px(t.corners.reduce((a, c) => (c[1] < a[1] ? c : a)));
+    const [lx, ly] = t.corners.map(px).reduce((a, c) => (height(c) > height(a) ? c : a));
     ctx.fillStyle = ctx.strokeStyle;
     ctx.font      = 'bold 16px sans-serif';
-    ctx.fillText(`P${t.id}`, lx, ly - 6);
+    ctx.save();
+    ctx.translate(lx, ly);
+    ctx.rotate(rot);
+    ctx.fillText(`P${t.id}`, 0, -6);
+    ctx.restore();
   }
 }
 

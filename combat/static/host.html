@@ -107,6 +107,7 @@
   <!-- Players -->
   <div id="players-panel">
     <h3>Players</h3>
+    <a id="scan-link" href="scan" target="_blank" style="display:none;color:#93c5fd;font-size:.85rem">🧍 Scan station: scan every player before the game ↗</a>
     <div id="player-list"><em style="opacity:.3">None connected</em></div>
   </div>
 
@@ -133,6 +134,7 @@ let nextFlagId   = 200;        // flag tags start at 200 per tag_detector.py
 let players      = {};
 let flags        = {};
 let startTime    = null;
+let idMode       = 'tags';     // 'clothes': players are recognised by their body scan
 
 // ─── Elements ─────────────────────────────────────────────────────────────
 const $wsBadge   = document.getElementById('ws-badge');
@@ -174,6 +176,8 @@ function handleMessage(d) {
     players = d.players || {};
     flags   = d.flags   || {};
     gameActive = d.game_active;
+    idMode     = d.id_mode || 'tags';
+    document.getElementById('scan-link').style.display = idMode === 'clothes' ? 'block' : 'none';
     // Buttons follow the server, so a dashboard opened/refreshed mid-game can still Stop
     $btnStart.disabled = gameActive;
     $btnStop.disabled  = !gameActive;
@@ -286,7 +290,7 @@ function renderPlayers() {
   $playerList.innerHTML = Object.values(players).map(p => `
     <div class="player-row ${p.alive ? '' : 'dead'}">
       <div class="dot" style="background:${p.team === 'red' ? '#f87171' : '#60a5fa'}"></div>
-      <span class="name">P${p.player_id}${p.connected === false ? ' 📵 offline' : ''}</span>
+      <span class="name">P${p.player_id}${p.connected === false ? ' 📵 offline' : ''}${idMode === 'clothes' && p.scanned === false ? ' <span style="color:#fbbf24" title="Not scanned: shots at this player can\'t count">⚠️ not scanned</span>' : ''}</span>
       <span class="status">${p.kills}K / ${p.deaths}D · ${p.alive ? '❤️'.repeat(p.hp) + '🖤'.repeat(p.max_hp - p.hp) : `💀 ${p.seconds_to_respawn}s`}</span>
     </div>
   `).join('');

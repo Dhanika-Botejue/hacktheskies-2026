@@ -2,13 +2,14 @@
 
 Real-world capture the flag: scan the play area with an iPhone into a 3D Gaussian-splat map, then
 watch players move through it live on the laptop, first-person like a shooter map. Players wear
-a phone and a printed AprilTag on their chest and shoot each other with finger guns.
+a phone on their chest and shoot each other with finger guns; a quick body scan before the game
+lets the cameras recognise who's who by their clothes.
 
 ```
 HackTheSkies app ──scan──▶ viewer (Node, :5173) ──trains──▶ 3D map ──▶ game map
 HTS Player app   ──pose───▶ game server (Python, :8443) ──live positions──┐
                  ──camera─▶ shooting server (Python, :8765/:8766)         ├──▶ viewer (spectator)
-                            finger gun + chest tag in view = hit ─────────┘
+                            finger gun pointed at a recognised player = hit┘
 ```
 
 The laptop is the spectator: it shows the scanned map, every player on it, their hit points, shots
@@ -30,12 +31,13 @@ Xcode's 3.9: then make the venv with [uv](https://docs.astral.sh/uv/) instead:
 
 You also need **Xcode** (Mac App Store) to install the iPhone apps.
 
-### Chest tags
+### Chest tags (optional, the old way)
 
-Every player wears a printed AprilTag on their chest: its number is their player number, and it's
-what other players' cameras aim at. Print `combat/tags/print_tags.pdf` (players 1–10) as large as
-people can wear, A3/tabloid if possible, on matte paper, mounted on card so it stays flat. More
-numbers (up to 34): `cd combat && ../.venv/bin/python gen_tags.py --ids 11 12 --pdf`.
+Players are recognised by their clothes (see **3. Join and place players**), so nothing needs
+printing. To identify them by printed AprilTag bibs instead, start the servers with
+`HTS_ID_MODE=tags` and print `combat/tags/print_tags.pdf` (players 1–10) as large as people can
+wear, on matte paper, mounted on card. More numbers (up to 34):
+`cd combat && ../.venv/bin/python gen_tags.py --ids 11 12 --pdf`.
 
 ### iPhone apps
 
@@ -118,17 +120,25 @@ If the map looks wrong, press **Esc** and use **Adjust map**:
 
 Do this before placing players. Flip and Rotate reset player positions and walls.
 
-## 3. Join and place players
+## 3. Scan, join and place players
 
+0. **Body scan, once per player per session** (and again if someone changes clothes, e.g. takes
+   off a jacket). On a spare iPhone, open the scan station at `https://<laptop IP>:8766/scan`
+   (tap through the certificate warning once) and prop it up at chest height. Enter the player's
+   number and tap **Start scan**; the player stands 2–4 m away, head to feet in view, and turns
+   around slowly (~8 s, the phone beeps and talks them through it). Next player.
+   - If the page warns that two players **look alike**, give one of them something distinctive
+     (a hat, a jacket, a bright scarf) and rescan: otherwise shots at them may not count.
+   - Scans are kept across server restarts (`combat/scans/`); the page lists them, with Delete.
 1. Open **HTS Player** and enter:
    - a name;
    - the game server address from `run.py` (e.g. `10.110.0.189:8443`);
-   - **Tag #**: the number on the tag you're wearing (1–34);
+   - **Tag #**: your player number (1–34), the one you were scanned as;
    - your **team** (Red or Blue).
 
    Tap **Join**. The second line of the screen shows the shooting server: hearts, gun state and a
    green dot once it's joined.
-2. Strap the phone to your chest, screen facing you, back camera forward, with your tag on the outside.
+2. Strap the phone to your chest, screen facing you, back camera forward.
    Stand still at a spot that's easy to recognise in the scan, like a corner or a doorway.
 3. In the viewer's **Players** panel, click **Place**. On the top-down map, click where the player stands, then click the direction they face.
    - Or: walk to their spot in the 3D view, look the way they face, and press **P**.
@@ -143,8 +153,10 @@ A player with no tag or team shows "can't be shot" in the Players panel.
    rename it, **−/+** to change its radius. Each ring shows which team is standing in it right now
    (yellow: both). Scoring for holding them comes later.
 2. Click **Start match** in the viewer's **Match** panel. Every phone says "Go!".
-3. Shoot: make a finger gun in front of your chest camera, one hand, and point it at another player's
-   tag. A hit takes one of their 3 hearts and empties your gun; **clap** near your phone to reload.
+3. Shoot: make a finger gun in front of your chest camera, one hand, and point it at another player
+   (front, side or back). They're recognised by their clothes after a couple of frames, so hold the
+   aim for a moment. A hit takes one of their 3 hearts and empties your gun; **clap** near your
+   phone to reload.
    The phone says what happened ("Hit! Clap to reload", "You're down", "Back in"), since you can't see
    its screen. Downed players come back after 10 s.
 4. On the laptop: shots fly as tracers between the two players, hit players flash, downed ones lie
@@ -203,5 +215,6 @@ For quicker training while testing, start the viewer with `TRAIN_STEPS=2000 EXPO
 | `run.py` crashes with `unsupported operand type(s) for \|` | The venv is on Python 3.9. Rebuild it on 3.10+ (see One-time setup). |
 | Match panel says "Shooting server offline" | `run.py` prints why it didn't start it (missing packages: `pip install -r requirements.txt`). |
 | Red dot on HTS Player's shooting line | The shooting server is on the same laptop at port 8766; check `run.py` started it and the address is right. |
-| Shots never land | The tag must be flat, large and in view of the shooter's camera, finger pointing at it. The status line on the phone says what's missing ("no tag in view", "point at the tag", "curl middle/ring to fire"). |
+| Shots never land | The target must be scanned (the combat dashboard at http://localhost:8765 marks unscanned players ⚠️) and in view of the shooter's camera, finger pointing at them. The web player page's status line says what's missing ("no player in view", "can't tell who that is yet", "curl middle/ring to fire"); the shooting server's log shows each match score (`matches=`). |
+| Shots land on the wrong player | Their outfits are too alike: rescan one of them wearing something distinctive. The scan station warns about look-alikes. |
 | Clap doesn't reload | Allow the microphone for HTS Player; clap right next to the phone. The camera also sees claps as a backup. |

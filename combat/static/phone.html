@@ -87,6 +87,8 @@
           align-items:center;justify-content:center;font-size:1.3rem;
           font-weight:600;opacity:.8;z-index:20;text-align:center;padding:24px}
     #idle.show{display:flex}
+    #idle{flex-direction:column;gap:18px}
+    #unscanned{display:none;font-size:1rem;color:#fde68a;font-style:normal}
   </style>
 </head>
 <body>
@@ -95,10 +97,11 @@
 <div id="setup">
   <h1>🔫 HackTheSkies</h1>
   <p>Strap your phone to your chest, rear camera facing out.<br>
-     Make a finger gun with one hand and point it at a tag.<br>
+     Make a finger gun with one hand and point it at another player<br>
+     (get scanned at the scan station first, so you can be recognised).<br>
      After every hit, clap loudly near the phone to reload (allow the microphone).</p>
 
-  <label>Your bib number (player ID 1–34)</label>
+  <label>Your player number (1–34)</label>
   <input id="pid" type="number" min="1" max="34" placeholder="e.g. 7"/>
 
   <label>Team</label>
@@ -152,7 +155,9 @@
   </div>
 
   <!-- Idle (waiting for host to start) -->
-  <div id="idle"><span>⏳ Waiting for host<br>to start the game…</span></div>
+  <div id="idle"><span>⏳ Waiting for host<br>to start the game…</span>
+    <em id="unscanned">⚠️ You haven't been scanned yet: go to the scan station,
+      or the game can't recognise you</em></div>
 
   <div id="bar">
     <div id="tgt">No target in frame</div>
@@ -177,6 +182,7 @@ let lastReloads = null; // server's reload counter last frame: +1 = a clap reloa
 let errorShown = false;
 let inGame    = null;   // null = not known yet (joined mid-game: no start sound)
 let respawnAt = null;
+let idMode    = 'tags'; // how the server tells players apart: 'clothes' (body scan) or 'tags' (bibs)
 
 // ─── Elements ─────────────────────────────────────────────────────────────
 const $setup    = document.getElementById('setup');
@@ -198,6 +204,7 @@ const $wsDot    = document.getElementById('ws-dot');
 const $wsLbl    = document.getElementById('ws-lbl');
 const $score    = document.getElementById('score-hud');
 const $micLbl   = document.getElementById('mic-lbl');
+const $unscanned = document.getElementById('unscanned');
 const $tapAudio = document.getElementById('tap-audio');
 const $pidLbl   = document.getElementById('pid-label');
 
@@ -213,7 +220,7 @@ $srvIn.value  = params.get('srv')  || location.host || saved.srv || '';
 $pidIn.value  = params.get('pid')  || saved.pid  || '';
 $teamIn.value = params.get('team') || saved.team || 'red';
 
-// Player IDs are the tag numbers printed on the bibs (tag25h9 has 1-34)
+// Player numbers 1-34 (the tag numbers printed on bibs, when the server uses tags: tag25h9 has 1-34)
 const MAX_PLAYER_ID = 34;
 let joining = false;   // a second tap on Join must not open a second connection
 
@@ -224,7 +231,7 @@ document.getElementById('go').addEventListener('click', async () => {
   const srv = $srvIn.value.trim();
   if (!playerId || !srv) { alert('Fill in all fields'); return; }
   if (playerId < 1 || playerId > MAX_PLAYER_ID) {
-    alert(`Player ID must be 1-${MAX_PLAYER_ID}: the number on your printed tag`); return;
+    alert(`Player number must be 1-${MAX_PLAYER_ID}`); return;
   }
   joining = true;
   unlockAudio();
@@ -331,13 +338,20 @@ async function startSendLoop() {
 // ─── Message handler ──────────────────────────────────────────────────────
 function handleMessage(d) {
   if (d.error) {
-    // e.g. a player ID with no printed tag, or another phone joined as this player
+    // e.g. a player number out of range, or another phone joined as this player
     if (d.error === 'invalid_player_id' && !errorShown) {
       errorShown = true;
-      alert(`Player ID must be 1-${d.max_player_id}: the number on your printed tag`);
+      alert(`Player number must be 1-${d.max_player_id}`);
     }
     $tgt.textContent = '⚠️ ' + d.error.replace(/_/g, ' ');
     $tgt.className   = 'warn';
+    return;
+  }
+
+  if (d.type === 'registered') {
+    idMode = d.id_mode || 'tags';
+    // Recognised by clothes: without a scan nobody's shots at you can count
+    $unscanned.style.display = idMode === 'clothes' && d.scanned === false ? 'block' : 'none';
     return;
   }
 
@@ -441,8 +455,10 @@ function handleMessage(d) {
 
 // ─── Status line ──────────────────────────────────────────────────────────
 function statusText(d) {
-  const ids = (d.tags_seen || []).map(t => t.id).join(', ');
+  const seen = d.tags_seen || [];
+  const ids = seen.map(t => t.id ?? '?').join(', ');
   const tgt = d.aiming_tag_id;
+  const what = idMode === 'clothes' ? 'player' : 'tag';
   switch (d.status) {
     case 'hit':                return [`💥 HIT Player ${tgt}!`, 'hit'];
     case 'dead':               return ['💀 You are down', ''];
@@ -450,8 +466,10 @@ function statusText(d) {
     case 'arming':             return [`⏳ Reloaded · ready in ${d.arming_left}s`, 'warn'];
     case 'no_hand':            return ['✋ No hand seen · hold your finger gun in view', ''];
     case 'two_hands':          return ['✋✋ Shoot with one hand · the second hand is only for clapping', 'warn'];
-    case 'no_tag_visible':     return ['🔫 Ready · no tag in view', ''];
-    case 'not_aimed':          return [`🔫 Ready · tag ${ids} in view, point at it`, 'warn'];
+    case 'no_tag_visible':     return [`🔫 Ready · no ${what} in view`, ''];
+    case 'not_aimed':          return [idMode === 'clothes' ? `🔫 Ready · ${seen.length} in view (${ids}), point at one`
+                                                            : `🔫 Ready · tag ${ids} in view, point at it`, 'warn'];
+    case 'not_identified':     return ["🎯 Can't tell who that is yet · keep pointing", 'warn'];
     case 'pose_not_ready':     return [`🎯 Aiming at P${tgt} · index out, curl middle/ring to fire`, 'warn'];
     case 'target_dead':        return [`🎯 P${tgt} is already down`, 'warn'];
     case 'same_team':          return [`🎯 P${tgt} is on your team`, 'warn'];
@@ -743,7 +761,7 @@ function triggerFlash(colour, msg) {
 // The <video> uses object-fit:cover, so map frame coords through the same
 // scale + centre-crop the browser applies, or the overlay drifts off the video.
 function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
-  const aimed = (tagsSeen || []).find(t => t.id === aimedId);
+  const aimed = aimedId == null ? null : (tagsSeen || []).find(t => t.id === aimedId);
   const tagCorners = aimed ? aimed.corners : null;
   ctx.clearRect(0, 0, $ov.width, $ov.height);
   const w = $ov.width, h = $ov.height;
@@ -795,10 +813,11 @@ function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
     ctx.setLineDash([]);
   }
 
-  // Every detected tag: white box + ID; the aimed-at one in red (camera-pixel coords).
-  // Dashed = not seen this frame, held at its last position for a moment.
+  // Every detected tag / person: white box + ID ("?" = not recognised); the aimed-at
+  // one in red (camera-pixel coords).  Dashed = not seen this frame, held at its
+  // last position for a moment.
   for (const t of tagsSeen || []) {
-    const isAimed = t.id === aimedId;
+    const isAimed = aimedId != null && t.id === aimedId;
     ctx.strokeStyle = isAimed ? 'rgba(239,68,68,0.95)' : 'rgba(255,255,255,0.85)';
     ctx.lineWidth   = isAimed ? 4 : 2;
     ctx.setLineDash(t.stale ? [6, 5] : []);
@@ -810,7 +829,7 @@ function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
     const [lx, ly] = px(t.corners.reduce((a, c) => (c[1] < a[1] ? c : a)));
     ctx.fillStyle = ctx.strokeStyle;
     ctx.font      = 'bold 16px sans-serif';
-    ctx.fillText(`P${t.id}`, lx, ly - 6);
+    ctx.fillText(t.id == null ? '?' : `P${t.id}`, lx, ly - 6);
   }
 }
 

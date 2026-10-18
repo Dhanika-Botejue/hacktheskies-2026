@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+  <title>HackTheSkies – Scan</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0a0a0a;color:#eee;font-family:'Segoe UI',sans-serif;min-height:100dvh}
+
+    /* ── Setup ──────────────────────────────────────────────────── */
+    #setup{display:flex;flex-direction:column;gap:14px;padding:28px 16px;
+           width:100%;max-width:440px;margin:0 auto}
+    #setup h1{text-align:center;font-size:1.8rem}
+    #setup p{text-align:center;opacity:.55;font-size:.85rem;line-height:1.4}
+    label{font-size:.8rem;opacity:.6;margin-bottom:-8px}
+    input,select{width:100%;padding:11px 13px;border-radius:9px;
+                 border:1px solid #333;background:#141414;color:#eee;font-size:1rem}
+    button{padding:15px;border-radius:11px;border:none;background:#2563eb;color:#fff;
+           font-size:1.1rem;font-weight:700;cursor:pointer}
+    button.small{padding:6px 10px;font-size:.8rem;background:#334155;border-radius:7px}
+    #warn{display:none;background:#713f12;color:#fde68a;border-radius:9px;padding:10px 12px;font-size:.85rem}
+    #warn.show{display:block}
+
+    /* Scanned players */
+    h2{font-size:.85rem;text-transform:uppercase;letter-spacing:.06em;opacity:.5;margin-top:8px}
+    #list{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px}
+    .card{background:#1e293b;border-radius:9px;padding:6px;text-align:center;font-size:.85rem}
+    .card img{width:100%;height:120px;object-fit:contain;background:#0f172a;border-radius:6px}
+    .card b{display:block;margin:4px 0}
+    .card.alike{outline:2px solid #f59e0b}
+    #none{opacity:.35;font-size:.85rem}
+
+    /* ── Scanning ───────────────────────────────────────────────── */
+    #scan{display:none;position:fixed;inset:0;background:#000}
+    video{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+    canvas#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+    #top{position:absolute;top:0;left:0;right:0;padding:12px 16px;background:rgba(0,0,0,.6);
+         display:flex;justify-content:space-between;align-items:center;font-weight:700}
+    #bottom{position:absolute;bottom:0;left:0;right:0;padding:14px 16px 22px;background:rgba(0,0,0,.72);
+            display:flex;flex-direction:column;gap:10px}
+    #msg{text-align:center;font-size:1.05rem;font-weight:700;padding:8px 12px;border-radius:8px;background:#1e293b}
+    #msg.warn{background:#713f12;color:#fde68a}
+    #msg.ok{background:#14532d;color:#86efac}
+    .bar-bg{height:10px;background:#1e293b;border-radius:5px;overflow:hidden}
+    #bar{height:100%;width:0;background:#22c55e;transition:width .2s}
+    #stop{background:#dc2626}
+
+    /* ── Done ───────────────────────────────────────────────────── */
+    #done{display:none;flex-direction:column;gap:14px;padding:28px 16px;max-width:440px;margin:0 auto;text-align:center}
+    #done img{max-height:260px;max-width:100%;margin:0 auto;border-radius:9px;background:#1e293b}
+    #done-warn{background:#713f12;color:#fde68a;border-radius:9px;padding:10px 12px;font-size:.95rem}
+    #done-ok{background:#14532d;color:#86efac;border-radius:9px;padding:10px 12px;font-size:.95rem}
+  </style>
+</head>
+<body>
+
+<!-- ── Setup ─────────────────────────────────────────────────── -->
+<div id="setup">
+  <h1>🧍 Scan station</h1>
+  <p>Players are recognised by their clothes, so everyone gets scanned before the game.
+     Prop this phone up at chest height (an iPhone works best: same camera as in the game),
+     have the player stand 2–4 m away, head to feet in view, and turn around slowly.</p>
+
+  <label>Player number (1–34, the one they join with)</label>
+  <input id="pid" type="number" min="1" max="34" placeholder="e.g. 7"/>
+
+  <label>Camera</label>
+  <select id="cam">
+    <option value="environment">Back camera</option>
+    <option value="user">Front camera</option>
+  </select>
+
+  <button id="go">Start scan</button>
+  <div id="warn"></div>
+
+  <h2>Scanned</h2>
+  <div id="list"><span id="none">Nobody yet</span></div>
+</div>
+
+<!-- ── Scanning ─────────────────────────────────────────────── -->
+<div id="scan">
+  <video id="vid" autoplay playsinline muted></video>
+  <canvas id="ov"></canvas>
+  <div id="top"><span id="who">P—</span><span id="count">0 / 24</span></div>
+  <div id="bottom">
+    <div id="msg">Starting…</div>
+    <div class="bar-bg"><div id="bar"></div></div>
+    <button id="stop">Cancel</button>
+  </div>
+</div>
+
+<!-- ── Done ─────────────────────────────────────────────────── -->
+<div id="done">
+  <h1 id="done-title">✅ Scanned</h1>
+  <img id="done-img" alt="">
+  <div id="done-ok">Looks different from everyone else scanned so far.</div>
+  <div id="done-warn"></div>
+  <button id="next">Scan the next player</button>
+  <button id="back" class="small">Back to the list</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const $vid = $('vid'), $ov = $('ov'), ctx = $ov.getContext('2d');
+let ws = null, stream = null, scanning = false, playerId = null, replyWaiter = null;
+let lastSpoken = '', lastSpokenAt = 0;
+
+// Relative URLs, so the page also works behind the viewer's /combat/ proxy
+const wsUrl = () => { const u = new URL('ws/scan', location.href); u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'; return u.href; };
+
+// ─── Scanned players ──────────────────────────────────────────────────────
+async function refreshList() {
+  let d;
+  try { d = await (await fetch('api/scans')).json(); } catch { return; }
+  const alike = new Set(d.lookalikes.flatMap(p => [p.a, p.b]));
+  $('list').innerHTML = d.scans.length ? d.scans.map(s => `
+    <div class="card ${alike.has(s.player_id) ? 'alike' : ''}">
+      <img src="${s.thumbnail}" alt="P${s.player_id}">
+      <b>P${s.player_id}</b>
+      <button class="small" data-del="${s.player_id}">Delete</button>
+    </div>`).join('') : '<span id="none">Nobody yet</span>';
+  $('warn').innerHTML = d.lookalikes.map(p =>
+    `⚠️ P${p.a} and P${p.b} look alike (${Math.round(p.share * 100)}% of views): give one of them a hat, jacket or bright item and rescan.`).join('<br>');
+  $('warn').classList.toggle('show', d.lookalikes.length > 0);
+  if (d.id_mode === 'tags') {
+    $('warn').innerHTML = 'ℹ️ The server identifies players by printed tags (HTS_ID_MODE=tags): scans are not used.';
+    $('warn').classList.add('show');
+  }
+}
+$('list').addEventListener('click', async e => {
+  const pid = e.target.dataset.del;
+  if (!pid || !confirm(`Delete P${pid}'s scan?`)) return;
+  await fetch(`api/scans/${pid}`, { method: 'DELETE' });
+  refreshList();
+});
+refreshList();
+
+// ─── Sounds + voice (the player can't see the screen while turning) ───────
+let audio = null;
+function beep(freq = 880, ms = 60) {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = freq; g.gain.value = 0.15;
+    o.connect(g).connect(audio.destination);
+    o.start(); o.stop(audio.currentTime + ms / 1000);
+  } catch {}
+}
+function say(text, force = false) {
+  const now = Date.now();
+  if (!force && (text === lastSpoken && now - lastSpokenAt < 4000 || now - lastSpokenAt < 1500)) return;
+  lastSpoken = text; lastSpokenAt = now;
+  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch {}
+}
+
+// ─── Start / stop ─────────────────────────────────────────────────────────
+$('go').addEventListener('click', start);
+$('next').addEventListener('click', () => { $('pid').value = (playerId || 0) + 1; show('setup'); $('pid').focus(); });
+$('back').addEventListener('click', () => show('setup'));
+$('stop').addEventListener('click', () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'scan_stop' })); stopScan(); show('setup'); });
+
+function show(which) {
+  $('setup').style.display = which === 'setup' ? 'flex' : 'none';
+  $('scan').style.display  = which === 'scan' ? 'block' : 'none';
+  $('done').style.display  = which === 'done' ? 'flex' : 'none';
+  if (which === 'setup') refreshList();
+}
+
+async function start() {
+  playerId = parseInt($('pid').value);
+  if (!(playerId >= 1 && playerId <= 34)) { alert('Player number must be 1-34'); return; }
+  beep(660, 40);                                  // unlocks audio on this tap
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: $('cam').value }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+  } catch (e) { alert('Camera access denied: ' + e.message + (location.protocol !== 'https:' && location.hostname !== 'localhost' ? '\nOpen this page over https.' : '')); return; }
+  $vid.srcObject = stream;
+  await new Promise(r => $vid.readyState >= 1 ? r() : ($vid.onloadedmetadata = r));
+  $('who').textContent = `P${playerId}`;
+  $('count').textContent = '0 / 24';
+  $('bar').style.width = '0';
+  setMsg('Connecting…', '');
+  show('scan');
+
+  ws = new WebSocket(wsUrl());
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'scan_start', player_id: playerId }));
+  ws.onmessage = e => { let d; try { d = JSON.parse(e.data); } catch { return; } handle(d); };
+  ws.onclose = () => { if (scanning) { setMsg('Lost the server: tap Cancel and try again', 'warn'); } stopScan(); };
+}
+
+function stopScan() {
+  scanning = false;
+  if (replyWaiter) { replyWaiter(); replyWaiter = null; }
+  if (ws) { ws.onclose = null; try { ws.close(); } catch {} ws = null; }
+}
+
+function setMsg(text, cls) { $('msg').textContent = text; $('msg').className = cls; }
+
+// ─── Messages ─────────────────────────────────────────────────────────────
+function handle(d) {
+  if (d.type !== 'scan_started' && replyWaiter) { replyWaiter(); replyWaiter = null; }
+  if (d.error) {
+    setMsg('⚠️ ' + d.error.replace(/_/g, ' '), 'warn');
+    if (d.error === 'invalid_player_id') { stopScan(); alert(`Player number must be 1-${d.max_player_id}`); show('setup'); }
+    return;
+  }
+  if (d.type === 'scan_started') {
+    scanning = true;
+    setMsg('Turn around slowly, arms relaxed', 'ok');
+    say('Stand still, then turn around slowly', true);
+    sendLoop();
+  } else if (d.type === 'scan_progress') {
+    $('count').textContent = `${d.samples} / ${d.needed}`;
+    $('bar').style.width = (100 * d.samples / d.needed) + '%';
+    if (d.took) beep(880 + 20 * d.samples, 50);
+    if (d.hint) { setMsg(d.hint, 'warn'); say(d.hint); }
+    else setMsg('Turn around slowly, arms relaxed', 'ok');
+    draw(d.box, d.frame_w, d.frame_h, !d.hint);
+  } else if (d.type === 'scan_done') {
+    stopScan();
+    beep(1320, 200);
+    $('done-title').textContent = `✅ P${d.player_id} scanned`;
+    $('done-img').src = d.thumbnail;
+    const alike = d.looks_like || [];
+    $('done-ok').style.display = alike.length ? 'none' : 'block';
+    $('done-warn').style.display = alike.length ? 'block' : 'none';
+    $('done-warn').innerHTML = alike.map(a =>
+      `⚠️ Looks like P${a.player_id} (${Math.round(a.share * 100)}% of views). Shots at either of them may not count: ` +
+      'add a hat, jacket or bright item to one of them and rescan.').join('<br>');
+    say(alike.length ? `Done. Warning: looks like player ${alike[0].player_id}` : 'Done', true);
+    show('done');
+  }
+}
+
+// ─── Frames: one in flight, longest side at most 1280 px ───────────────────
+const $snap = document.createElement('canvas'), snapCtx = $snap.getContext('2d');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function sendLoop() {
+  while (scanning && ws && ws.readyState === 1) {
+    const started = performance.now();
+    const vw = $vid.videoWidth, vh = $vid.videoHeight;
+    if (vw && vh) {
+      const k = Math.min(1, 1280 / Math.max(vw, vh));
+      $snap.width = Math.round(vw * k); $snap.height = Math.round(vh * k);
+      snapCtx.drawImage($vid, 0, 0, $snap.width, $snap.height);
+      const blob = await new Promise(r => $snap.toBlob(r, 'image/jpeg', 0.8));
+      if (blob && scanning && ws && ws.readyState === 1) {
+        const replied = new Promise(r => { replyWaiter = r; });
+        ws.send(await blob.arrayBuffer());
+        await Promise.race([replied, sleep(2000)]);
+      }
+    }
+    await sleep(Math.max(0, 100 - (performance.now() - started)));
+  }
+}
+
+// ─── Overlay: the person being scanned (the video is object-fit:cover) ─────
+function draw(box, fw, fh, good) {
+  $ov.width = $ov.clientWidth; $ov.height = $ov.clientHeight;
+  ctx.clearRect(0, 0, $ov.width, $ov.height);
+  if (!box || !fw) return;
+  const s = Math.max($ov.width / fw, $ov.height / fh);
+  const ox = ($ov.width - fw * s) / 2, oy = ($ov.height - fh * s) / 2;
+  ctx.strokeStyle = good ? 'rgba(34,197,94,0.95)' : 'rgba(250,204,21,0.9)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(ox + box[0] * s, oy + box[1] * s, (box[2] - box[0]) * s, (box[3] - box[1]) * s);
+}
+</script>
+</body>
+</html>

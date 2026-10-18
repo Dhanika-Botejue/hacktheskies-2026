@@ -61,10 +61,11 @@ _PALMS = {
 }
 
 
-def fake_process_frame(data: bytes, remembered: list) -> dict:
+def fake_process_frame(data: bytes, remembered: list, people=None) -> dict:
     """What the camera sees, from the phone's JSON note:
     aim=tag the finger points at, ready=finger-gun pose, hands=0/1/2/'clap',
-    tags=tags in view (default: the aimed one), corrupt=undecodable frame."""
+    tags=tags in view (default: the aimed one), unknown=the finger points at a
+    person the server doesn't recognise, corrupt=undecodable frame."""
     see = json.loads(data)
     if see.get('corrupt'):
         return {'error': 'jpeg_decode_failed'}
@@ -75,12 +76,14 @@ def fake_process_frame(data: bytes, remembered: list) -> dict:
              'corners': [[600, 260], [680, 260], [680, 340], [600, 340]]}
             for i in see.get('tags', [aim] if aim else [])]
     tag = next((t for t in tags if t['id'] == aim), None) if one else None
+    unknown = [{'id': None, 'corners': [[900, 200], [1000, 200], [1000, 500], [900, 500]],
+                'stale': False, 'kind': 'person'}] if see.get('unknown') else []
     return {
         'pose': 1.0 if ready else 0.0, 'armed': ready, 'ready': ready, 'shooting': one,
         'own_palms': palms, 'n_hands': len(palms), 'detected': bool(palms),
         'landmarks': None, 'other_landmarks': [], 'criteria': {}, 'tag': tag,
-        'fresh_tags': tags,
-        'tags_seen': [{'id': t['id'], 'corners': t['corners'], 'stale': False} for t in tags],
+        'fresh_tags': tags, 'aimed_unknown': one and tag is None and bool(unknown),
+        'tags_seen': [{'id': t['id'], 'corners': t['corners'], 'stale': False} for t in tags] + unknown,
         'frame_w': 1280, 'frame_h': 720,
     }
 
@@ -265,6 +268,9 @@ async def run() -> int:
         check('both hands in view: no shot even when aimed', r['status'] == 'two_hands' and not r['shot_fired'], r['status'])
         r = await p1.frame(aim=2, ready=False)
         check('aimed without a finger-gun pose: no shot', r['status'] == 'pose_not_ready', r['status'])
+        r = await p1.frame(unknown=True, ready=True)
+        check("swinging onto someone not recognised: no shot at the player aimed at a moment ago",
+              r['status'] == 'not_identified' and not r['shot_fired'] and g.players[2].hp == 3, r['status'])
         await p1.frame(hands=2)
         r = await p1.frame(ready=True)
         check("raising the 2nd hand cancels the earlier aim (hands can't combine into a shot)",

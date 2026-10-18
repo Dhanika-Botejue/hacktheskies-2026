@@ -159,6 +159,10 @@ class PlayerFusion:
                                {"ar": pose and pose["yaw"], "gyro": self.gyro}, self.compass)
         self._compass_pos = None
         self._north_samples = []
+        # A fresh start: a camera overruled before the host re-placed them gets another chance.
+        self.camera_suspect = False
+        self._recent_steps.clear()
+        self._ar_at_step = None
 
     def _learn_north(self, compass: float, now: float) -> None:
         """A single compass reading is often 10°+ off indoors, so average where north is

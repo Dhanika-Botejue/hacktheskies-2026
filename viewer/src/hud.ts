@@ -329,7 +329,7 @@ export function renderPlayersPanel(
     : !players.length
       ? `<li class="empty">No players yet. Join from the HTS Player app or <code>/web/phone.html</code>.</li>`
       : players.map((p, i) => `
-        <li data-id="${p.id}" class="${p.id === selectedId ? "active" : ""}">
+        <li data-id="${escapeHtml(p.id)}" class="${p.id === selectedId ? "active" : ""}">
           <div class="title">
             <span class="name"><span class="dot ${p.connected ? "on" : ""}"></span><span class="swatch" style="background:${playerColor(p)}"></span>${i < 9 ? `<kbd>${i + 1}</kbd>` : ""}${escapeHtml(p.name)}</span>
             <span class="row">

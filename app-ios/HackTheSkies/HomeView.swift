@@ -23,14 +23,22 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, minHeight: 64)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(serverURL.isEmpty || !ARWorldTrackingConfiguration.isSupported)
+            .disabled(Uploader.laptop(serverURL) == nil || !ARWorldTrackingConfiguration.isSupported)
             .padding(.horizontal, 32)
 
             serverStatus
             Spacer()
         }
         .padding()
-        .task(id: serverURL) { await ping() }
+        .task(id: serverURL) {
+            reachable = nil
+            // Keep checking: the first try fails while iOS asks for Local Network access, and the
+            // viewer may start after the app.
+            while !Task.isCancelled {
+                await ping()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .fullScreenCover(isPresented: $scanning) {
             ScanView(serverURL: serverURL)
         }
@@ -70,14 +78,16 @@ struct HomeView: View {
     }
 
     private func ping() async {
-        guard let url = URL(string: serverURL)?.appendingPathComponent("api/maps") else {
-            reachable = nil
+        // Same address handling as the upload, so the dot says whether the upload will get through.
+        var components = Uploader.laptop(serverURL)
+        components?.path = "/api/maps"
+        guard let url = components?.url else {
+            reachable = false
             return
         }
-        reachable = nil
         var request = URLRequest(url: url)
         request.timeoutInterval = 4
         let ok = (try? await URLSession.shared.data(for: request)).map { ($0.1 as? HTTPURLResponse)?.statusCode == 200 }
-        reachable = ok ?? false
+        if !Task.isCancelled { reachable = ok ?? false }  // else the address changed meanwhile
     }
 }

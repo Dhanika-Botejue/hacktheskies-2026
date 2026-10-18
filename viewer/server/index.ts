@@ -163,7 +163,13 @@ async function receiveSplat(req: http.IncomingMessage, res: http.ServerResponse,
   json(res, 201, { id });
 }
 
-function serveMapFile(res: http.ServerResponse, rel: string) {
+function serveMapFile(res: http.ServerResponse, encoded: string) {
+  let rel: string;
+  try {
+    rel = decodeURIComponent(encoded);
+  } catch {
+    rel = ""; // malformed escape: not a map file
+  }
   const file = path.resolve(MAPS_DIR, rel);
   if (!file.startsWith(MAPS_DIR + path.sep) || !SPLAT_EXTS.includes(path.extname(file)) || !fs.existsSync(file)) {
     res.writeHead(404).end();
@@ -174,7 +180,8 @@ function serveMapFile(res: http.ServerResponse, rel: string) {
     "content-length": fs.statSync(file).size,
     "cache-control": "public, max-age=31536000, immutable",
   });
-  fs.createReadStream(file).pipe(res);
+  // pipeline: a preview deleted under us or a viewer that stops downloading mustn't crash the server.
+  pipeline(fs.createReadStream(file), res).catch(() => res.destroy());
 }
 
 function sse(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -300,7 +307,12 @@ const vite = await createVite({
 });
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url ?? "/", "http://x");
+  let url: URL;
+  try {
+    url = new URL(req.url ?? "/", "http://x");
+  } catch {
+    return json(res, 400, { error: "bad url" }); // an exception here would take the whole server down
+  }
   if (url.pathname.startsWith("/api/")) {
     handleApi(req, res, url).catch((err) => {
       console.error(err);
@@ -308,7 +320,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (url.pathname.startsWith("/maps/")) return serveMapFile(res, decodeURIComponent(url.pathname.slice(6)));
+  if (url.pathname.startsWith("/maps/")) return serveMapFile(res, url.pathname.slice(6));
   const target = upstreamFor(url.pathname);
   if (target) return proxy(target, req, res);
   vite.middlewares(req, res);
@@ -318,6 +330,9 @@ server.on("upgrade", (req, socket, head) => {
   const target = upstreamFor(req.url);
   if (target) proxySocket(target, req, socket, head);
 });
+
+// Node gives up on a request after 5 min by default: too soon for a big scan over slow Wi-Fi.
+server.requestTimeout = 0;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`\n  Viewer:          http://localhost:${PORT}`);

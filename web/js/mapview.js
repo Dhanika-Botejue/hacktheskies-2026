@@ -220,22 +220,26 @@ export class MapView {
   }
 }
 
+const SILENT_MS = 5000; // the server sends state 20 times a second; this long with nothing = the link is dead
+
 export function connect(hello, onMessage, onStatus) {
   // WebSocket that reconnects and queues messages sent while offline.
   const queue = [];
   let ws = null;
   let delay = 500;
+  let heardAt = 0;
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 
   function open() {
     ws = new WebSocket(url);
+    heardAt = performance.now();
     ws.onopen = () => {
       delay = 500;
       ws.send(JSON.stringify(hello));
       while (queue.length) ws.send(queue.shift());
       onStatus && onStatus(true);
     };
-    ws.onmessage = (e) => onMessage(JSON.parse(e.data));
+    ws.onmessage = (e) => { heardAt = performance.now(); onMessage(JSON.parse(e.data)); };
     ws.onclose = () => {
       onStatus && onStatus(false);
       setTimeout(open, delay);
@@ -243,6 +247,16 @@ export function connect(hello, onMessage, onStatus) {
     };
   }
   open();
+
+  // After a Wi-Fi drop or with the phone locked, a socket can stay "open" for minutes with nothing
+  // getting through (and closing it may wait as long for the server's reply): drop it and start over.
+  setInterval(() => {
+    if (ws.readyState > WebSocket.OPEN || performance.now() - heardAt < SILENT_MS) return;
+    ws.onopen = ws.onmessage = ws.onclose = null;
+    ws.close();
+    onStatus && onStatus(false);
+    open();
+  }, 1000);
 
   return {
     // reliable=true queues the message if offline (steps); false drops it (heading pings).

@@ -85,7 +85,7 @@ export function setupMerge(onMerge: (maps: MapInfo[]) => void) {
   };
 }
 
-function escapeHtml(s: string) {
+export function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 const escapeAttr = escapeHtml;

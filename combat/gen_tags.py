@@ -126,6 +126,13 @@ def make_tag_image(tag_id: int, cell_px: int = 50, quiet_extra: int = 2,
     return img
 
 
+def family_width(family: str = TAG_FAMILY) -> int:
+    """The family's total_width in cells (9 for tag25h9).  The detector must stay
+    alive while its family struct is read: it frees its families when it goes."""
+    det = apriltag.Detector(families=family)
+    return int(det.tag_families[family].contents.total_width)
+
+
 def verify_tag(img_gray: np.ndarray, expected_id: int, family: str = TAG_FAMILY) -> bool:
     """Run the detector on the generated image and confirm it decodes correctly."""
     det = apriltag.Detector(families=family, quad_decimate=1.0)
@@ -192,8 +199,7 @@ def write_print_pdf(ids: list[int], path: pathlib.Path, dpi: int = 300) -> None:
     from PIL import Image, ImageDraw, ImageFont
 
     page_w, page_h = int(8.5 * dpi), int(11 * dpi)
-    fam     = apriltag.Detector(families=TAG_FAMILY).tag_families[TAG_FAMILY].contents
-    ew      = int(fam.total_width) + 2 * 2
+    ew      = family_width() + 2 * 2
     cell_px = (page_w - dpi // 2) // ew               # ~0.25in side margins
     try:
         font = ImageFont.truetype('arial.ttf', dpi // 3)
@@ -256,8 +262,7 @@ def main() -> int:
 
     # Pick cell_px so we get roughly args.size pixels total
     # (family total_width + 2 extra quiet cells per side, as in make_tag_image)
-    fam     = apriltag.Detector(families=TAG_FAMILY).tag_families[TAG_FAMILY].contents
-    ew      = int(fam.total_width) + 2 * 2
+    ew      = family_width() + 2 * 2
     cell_px = max(10, args.size // ew)
 
     print(f'Generating {len(ids)} {TAG_FAMILY} tag(s) -> {out_dir.resolve()}/')

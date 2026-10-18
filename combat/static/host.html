@@ -80,7 +80,7 @@
 <header>
   <h1>🔫 HackTheSkies</h1>
   <span class="subtitle">Host Dashboard</span>
-  <a href="/tags" target="_blank" style="color:#93c5fd;font-size:14px">🏷 Tags</a>
+  <a href="tags" target="_blank" style="color:#93c5fd;font-size:14px">🏷 Tags</a>
   <span id="ws-badge">connecting…</span>
   <span id="timer-display">00:00</span>
 </header>
@@ -100,7 +100,7 @@
 
   <!-- Map -->
   <div id="map-panel">
-    <h3>Map — click to place flags</h3>
+    <h3>Map — the bases and the flag (placed in the viewer's Bases &amp; flag panel)</h3>
     <canvas id="map-canvas"></canvas>
   </div>
 
@@ -115,8 +115,6 @@
   <div id="controls">
     <button class="btn btn-start" id="btn-start">▶ Start Game</button>
     <button class="btn btn-stop"  id="btn-stop" disabled>■ Stop Game</button>
-    <button class="btn btn-flag"  id="btn-flag-mode">🚩 Flag mode: OFF</button>
-    <span id="flag-hint">Click map to place flag when flag mode is on</span>
     <span style="flex:1"></span>
     <span id="ws-badge" style="display:none"></span>
   </div>
@@ -129,10 +127,8 @@
 // ─── State ────────────────────────────────────────────────────────────────
 let ws           = null;
 let gameActive   = false;
-let flagMode     = false;
-let nextFlagId   = 200;        // flag tags start at 200 per tag_detector.py
 let players      = {};
-let flags        = {};
+let objectives   = null;       // bases + flag (game server metres), from state_update
 let startTime    = null;
 let idMode       = 'tags';     // 'clothes': players are recognised by their body scan
 
@@ -144,15 +140,16 @@ const $playerList= document.getElementById('player-list');
 const $log       = document.getElementById('log-panel');
 const $btnStart  = document.getElementById('btn-start');
 const $btnStop   = document.getElementById('btn-stop');
-const $btnFlag   = document.getElementById('btn-flag-mode');
 const $timer     = document.getElementById('timer-display');
 const $canvas    = document.getElementById('map-canvas');
 const mapCtx     = $canvas.getContext('2d');
 
 // ─── WebSocket ────────────────────────────────────────────────────────────
 function connect() {
-  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/host`;
-  ws = new WebSocket(url);
+  // Relative, so the page also works behind the viewer's /combat/ proxy
+  const url = new URL('ws/host', location.href);
+  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(url.href);
 
   ws.onopen  = () => { $wsBadge.className = 'ok'; $wsBadge.textContent = '● connected'; };
   ws.onclose = () => {
@@ -174,7 +171,7 @@ function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj))
 function handleMessage(d) {
   if (d.type === 'state_update') {
     players = d.players || {};
-    flags   = d.flags   || {};
+    objectives = d.objectives || null;
     gameActive = d.game_active;
     idMode     = d.id_mode || 'tags';
     document.getElementById('scan-link').style.display = idMode === 'clothes' ? 'block' : 'none';
@@ -226,12 +223,6 @@ function handleMessage(d) {
 $btnStart.addEventListener('click', () => send({ type: 'start_game' }));
 $btnStop .addEventListener('click', () => send({ type: 'stop_game'  }));
 
-$btnFlag.addEventListener('click', () => {
-  flagMode = !flagMode;
-  $btnFlag.textContent = `🚩 Flag mode: ${flagMode ? 'ON' : 'OFF'}`;
-  $btnFlag.style.background = flagMode ? '#b45309' : '';
-});
-
 // ─── Map ──────────────────────────────────────────────────────────────────
 function resizeCanvas() {
   $canvas.width  = $canvas.clientWidth;
@@ -239,18 +230,6 @@ function resizeCanvas() {
   renderMap();
 }
 new ResizeObserver(resizeCanvas).observe($canvas);
-
-$canvas.addEventListener('click', e => {
-  if (!flagMode) return;
-  const r   = $canvas.getBoundingClientRect();
-  const nx  = (e.clientX - r.left)  / $canvas.width;
-  const ny  = (e.clientY - r.top)   / $canvas.height;
-  const fid = nextFlagId++;
-  send({ type: 'add_flag', flag_id: fid, x: nx, y: ny });
-  flags[fid] = { flag_id: fid, x: nx, y: ny, owner_team: null };
-  addLog(`Flag ${fid} placed at (${nx.toFixed(2)}, ${ny.toFixed(2)})`, 'sys');
-  renderMap();
-});
 
 function renderMap() {
   const w = $canvas.width, h = $canvas.height;
@@ -263,12 +242,20 @@ function renderMap() {
   for (let x = 0; x < w; x += step) { mapCtx.beginPath(); mapCtx.moveTo(x,0); mapCtx.lineTo(x,h); mapCtx.stroke(); }
   for (let y = 0; y < h; y += step) { mapCtx.beginPath(); mapCtx.moveTo(0,y); mapCtx.lineTo(w,y); mapCtx.stroke(); }
 
-  // Flags
-  for (const f of Object.values(flags)) {
-    const fx = f.x * w, fy = f.y * h;
-    const col = f.owner_team === 'red' ? '#f87171' : f.owner_team === 'blue' ? '#60a5fa' : '#94a3b8';
+  // The bases (team colour) and the flag (its owner's colour), fitted to the canvas
+  const zones = Object.entries((objectives && objectives.bases) || {})
+    .map(([team, z]) => ({ ...z, team, label: `${team} base` }));
+  if (objectives && objectives.flag) zones.push({ ...objectives.flag, team: objectives.flag.owner, label: '⚑ flag' });
+  if (!zones.length) return;
+  const x0 = Math.min(...zones.map(z => z.x - z.r)), x1 = Math.max(...zones.map(z => z.x + z.r));
+  const y0 = Math.min(...zones.map(z => z.y - z.r)), y1 = Math.max(...zones.map(z => z.y + z.r));
+  const s  = 0.85 * Math.min(w / Math.max(x1 - x0, 1e-3), h / Math.max(y1 - y0, 1e-3));
+  const ox = (w - (x1 - x0) * s) / 2 - x0 * s, oy = (h - (y1 - y0) * s) / 2 - y0 * s;
+  for (const f of zones) {
+    const fx = ox + f.x * s, fy = oy + f.y * s;
+    const col = f.team === 'red' ? '#f87171' : f.team === 'blue' ? '#60a5fa' : '#94a3b8';
     mapCtx.beginPath();
-    mapCtx.arc(fx, fy, 12, 0, Math.PI * 2);
+    mapCtx.arc(fx, fy, Math.max(f.r * s, 6), 0, Math.PI * 2);
     mapCtx.fillStyle = col + '33';
     mapCtx.fill();
     mapCtx.strokeStyle = col;
@@ -277,7 +264,7 @@ function renderMap() {
     mapCtx.fillStyle   = col;
     mapCtx.font        = '11px sans-serif';
     mapCtx.textAlign   = 'center';
-    mapCtx.fillText(`F${f.flag_id - 200}`, fx, fy + 4);
+    mapCtx.fillText(f.label, fx, fy + 4);
   }
 
   // Players

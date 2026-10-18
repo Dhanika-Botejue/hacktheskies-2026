@@ -76,7 +76,9 @@ export class StepDetector {
   fire(t) {
     const swing = Math.max(this.peak - this.trough, 0.5);
     const len = Math.min(1.8, Math.max(0.3, this.k * Math.pow(swing, 0.25)));
-    const heading = this.headingSin || this.headingCos
+    // The average since the last step; after standing still that's mostly where the player faced
+    // before they turned to walk off, so the first step takes the current heading.
+    const heading = (this.headingSin || this.headingCos) && t - this.lastStep < 2000
       ? ((Math.atan2(this.headingSin, this.headingCos) / DEG) + 360) % 360
       : this.heading;
     this.headingSin = this.headingCos = 0;

@@ -50,7 +50,9 @@ export function listMaps(): MapInfo[] {
   return fs
     .readdirSync(MAPS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory() && fs.existsSync(path.join(MAPS_DIR, d.name, "map.json")))
-    .map((d) => getMap(d.name)!)
+    .map((d) => getMap(d.name))
+    // Skips folders that aren't valid maps (e.g. a copy named "… copy", or an unreadable map.json).
+    .filter((m): m is MapInfo => m !== null)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 

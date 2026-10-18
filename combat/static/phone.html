@@ -173,7 +173,6 @@
 <script>
 // ─── State ────────────────────────────────────────────────────────────────
 let ws        = null;
-let sending   = false;
 let playerId  = null;
 let team      = null;
 let alive     = true;
@@ -243,18 +242,12 @@ document.getElementById('go').addEventListener('click', async () => {
   try { sfx.ready(); } catch {}
   try { localStorage.setItem('hts-setup', JSON.stringify({ pid: playerId, team, srv })); } catch {}
 
-  // Camera + microphone (the mic hears reload claps).  Raw audio: echo
-  // cancellation / noise suppression would soften exactly the sharp clap we want.
-  // If the mic is refused, play on with the camera only (camera claps still work).
-  const video = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } };
   let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-    });
-  } catch {
-    try { stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); }
-    catch (e) { joining = false; alert('Camera access denied: ' + e.message); return; }
+  try { stream = await openCamera(); }
+  catch (e) {
+    joining = false;
+    alert('Camera access denied: ' + e.message + (location.protocol !== 'https:' && location.hostname !== 'localhost' ? '\nOpen this page over https.' : ''));
+    return;
   }
   startClapMic(stream);
 
@@ -264,6 +257,7 @@ document.getElementById('go').addEventListener('click', async () => {
   $setup.style.display = 'none';
   $game.style.display  = 'block';
   renderHp(3, 3);
+  keepAwake();   // the phone is on your chest: nobody touches it to keep the screen on
 
   connectWS(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${srv}/ws/phone`);
   // Auto-join (page refresh) has had no tap yet, so audio + mic can't start:
@@ -273,28 +267,81 @@ document.getElementById('go').addEventListener('click', async () => {
 
 if (params.get('pid') && params.get('team')) document.getElementById('go').click();
 
-// ─── WebSocket ────────────────────────────────────────────────────────────
-function connectWS(url) {
-  ws = new WebSocket(url);
-  ws.binaryType = 'arraybuffer';
+// Camera + microphone (the mic hears reload claps).  Raw audio: echo
+// cancellation / noise suppression would soften exactly the sharp clap we want.
+// If the mic is refused, play on with the camera only (camera claps still work).
+async function openCamera() {
+  const video = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } };
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+  } catch {
+    return await navigator.mediaDevices.getUserMedia({ video, audio: false });
+  }
+}
 
-  ws.onopen = () => {
+// ─── Back from the lock screen / another app ──────────────────────────────
+// The browser drops the screen lock whenever the page is hidden, so take it
+// again on return.  The camera (and mic) may have been stopped meanwhile, e.g.
+// another app took the camera: get them again, or every frame would be the last
+// one.  A video paused in the background needs play() to move again.
+async function keepAwake() {
+  try { await navigator.wakeLock?.request('screen'); } catch { /* unsupported */ }
+}
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !$vid.srcObject) return;
+  keepAwake();
+  if ($vid.srcObject.getTracks().some(t => t.readyState === 'ended')) {
+    let stream;
+    try { stream = await openCamera(); } catch { return; }
+    $vid.srcObject.getTracks().forEach(t => t.stop());
+    $vid.srcObject = stream;
+    startClapMic(stream);
+  }
+  $vid.play().catch(() => {});
+});
+
+// ─── WebSocket ────────────────────────────────────────────────────────────
+// A connection can also die without closing (Wi-Fi dropped, the phone locked):
+// the browser may not notice for a minute, so no word from the server for
+// SILENT_MS after sending a frame (it answers every one), or a connection
+// attempt that hangs that long, means starting over on a fresh connection.
+const SILENT_MS = 5000;
+let wsUrl = null;
+let inFlightSince = null;   // when the oldest frame still waiting for an answer was sent
+
+function connectWS(url) {
+  wsUrl = url;
+  const sock = ws = new WebSocket(url);
+  sock.binaryType = 'arraybuffer';
+
+  sock.onopen = () => {
     setWS('ok', 'connected');
-    ws.send(JSON.stringify({ type: 'register', player_id: playerId, team }));
-    ws.send(JSON.stringify({ type: 'mic', state: micState }));
-    startSendLoop();
+    sock.send(JSON.stringify({ type: 'register', player_id: playerId, team }));
+    sock.send(JSON.stringify({ type: 'mic', state: micState }));
+    startSendLoop(sock);
   };
-  ws.onclose = () => {
-    setWS('err', 'disconnected');
-    sending = false;
-    setTimeout(() => connectWS(url), 2000);
-  };
-  ws.onerror = () => setWS('err', 'error');
-  ws.onmessage = e => {
+  sock.onclose = () => reconnectWS(sock);
+  sock.onerror = () => setWS('err', 'error');
+  sock.onmessage = e => {
+    inFlightSince = null;
     let d; try { d = JSON.parse(e.data); } catch { return; }
     if (d.type === 'frame_result' || d.type === 'idle' || d.error) frameReplied();
     handleMessage(d);
   };
+  setTimeout(() => { if (sock.readyState === WebSocket.CONNECTING) reconnectWS(sock); }, SILENT_MS);
+}
+
+// Drop this connection (if it's still the current one) and open a new one in 2 s
+function reconnectWS(sock) {
+  if (ws !== sock) return;
+  ws = null;
+  sock.onopen = sock.onclose = sock.onerror = sock.onmessage = null;
+  try { sock.close(); } catch {}
+  setWS('err', 'disconnected');
+  frameReplied();             // its send loop stops waiting
+  setTimeout(() => connectWS(wsUrl), 2000);
 }
 
 function setWS(state, label) {
@@ -312,9 +359,12 @@ const REPLY_TIMEOUT_MS  = 1000;
 let replyWaiter = null;
 function frameReplied() { if (replyWaiter) { replyWaiter(); replyWaiter = null; } }
 
-async function startSendLoop() {
-  sending = true;
-  while (sending && ws && ws.readyState === WebSocket.OPEN) {
+// One loop per connection: a loop left over from before a reconnect stops,
+// so two can never send at once.
+async function startSendLoop(sock) {
+  inFlightSince = null;
+  while (ws === sock && sock.readyState === WebSocket.OPEN) {
+    if (inFlightSince !== null && performance.now() - inFlightSince > SILENT_MS) { reconnectWS(sock); break; }
     const started = performance.now();
     let sent = false;
     if ($vid.readyState >= 2) {
@@ -326,9 +376,10 @@ async function startSendLoop() {
         $ov.width  = $ov.clientWidth;
         $ov.height = $ov.clientHeight;
         const blob = await new Promise(r => $snap.toBlob(r, 'image/jpeg', 0.7));
-        if (blob && ws.readyState === WebSocket.OPEN) {
+        if (blob && ws === sock && sock.readyState === WebSocket.OPEN) {
           const replied = new Promise(r => { replyWaiter = r; });
-          ws.send(await blob.arrayBuffer());
+          sock.send(await blob.arrayBuffer());
+          if (inFlightSince === null) inFlightSince = performance.now();
           sent = true;
           await Promise.race([replied, sleep(REPLY_TIMEOUT_MS)]);
         }
@@ -364,15 +415,17 @@ function handleMessage(d) {
     // Players can't see the screen (phone on a lanyard): every state change
     // they need to know about is a sound.
     const justStarted = inGame === false;            // idle -> playing
+    const wasInGame   = inGame === true;             // (null: page just opened mid-game)
     const wasAlive    = alive;
     if (justStarted) sfx.start();
     else if (!alive && d.alive) sfx.respawn();       // back in after being downed
     inGame    = true;
     alive     = d.alive;
-    respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;
+    // From the seconds left, not the server's clock: the phone's may be off from the laptop's
+    respawnAt = d.alive ? null : Date.now() + (d.remaining || 0) * 1000;
     respawnMode = d.respawn_mode || respawnMode;
     const owner = d.flag ? d.flag.owner : null;
-    if (owner && owner !== flagOwner && !justStarted) say(owner === team ? 'We took the flag' : 'They took the flag', 300);
+    if (owner && owner !== flagOwner && wasInGame) say(owner === team ? 'We took the flag' : 'They took the flag', 300);
     flagOwner = owner;
     if (d.hp !== undefined) renderHp(d.hp, d.max_hp);
 
@@ -563,9 +616,13 @@ function unlockAudio() {
     if (audioCtx.state !== 'running') audioCtx.resume();   // 'suspended', or iPhone's 'interrupted'
     attachClapMic();   // the mic stream may have arrived before the audio context
   } catch {}
+  // iPhone: speech stays silent until something has been spoken during a tap
+  try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch {}
 }
-// Any tap (re)starts audio; the banner goes away once audio is really running
-document.addEventListener('pointerdown', () => { unlockAudio(); setTimeout(checkAudioReady, 300); });
+// Any tap (re)starts audio; the banner goes away once audio is really running.
+// (A finger's pointerdown doesn't count as a tap for starting audio, its touchend does.)
+for (const type of ['pointerdown', 'touchend'])
+  document.addEventListener(type, () => { unlockAudio(); setTimeout(checkAudioReady, 300); });
 
 function checkAudioReady() {
   const running = audioCtx && audioCtx.state === 'running';
@@ -703,8 +760,8 @@ const CLAP_MIN_PEAK  = 0.5;   // peak loudness, 1.0 = the mic's maximum (0.5: cl
 const CLAP_MIN_CREST = 4;     // peak / average level over ~45 ms: how sharp the sound is
 const CLAP_OVER_BG   = 8;     // peak / the room's background level
 const CLAP_GAP_MS    = 400;   // one clap per this long
-let micStream = null, micAnalyser = null, micBuf = null, micBg = 0.01, lastClapAt = -Infinity;
-let micState = 'off', micMax = 0, micTicks = 0;
+let micStream = null, micSource = null, micAnalyser = null, micBuf = null, micBg = 0.01, lastClapAt = -Infinity;
+let micState = 'off', micMax = 0, micTicks = 0, micTimer = null;
 
 // Mic status on the test screen and in the server log (to debug phones you can't see)
 function reportMic(state) {
@@ -715,6 +772,8 @@ function reportMic(state) {
 }
 
 function startClapMic(stream) {
+  // A new stream (the camera was restarted): stop listening to the old one
+  if (micSource) { micSource.disconnect(); micSource = micAnalyser = null; }
   if (!stream.getAudioTracks().length) { reportMic('blocked (no mic permission)'); return; }
   micStream = stream;
   attachClapMic();
@@ -723,19 +782,20 @@ function startClapMic(stream) {
 function attachClapMic() {
   if (micAnalyser || !micStream || !audioCtx) return;
   try {
-    const src = audioCtx.createMediaStreamSource(micStream);
+    micSource = audioCtx.createMediaStreamSource(micStream);
     micAnalyser = audioCtx.createAnalyser();
     micAnalyser.fftSize = 2048;                     // ~45 ms of audio per look
     micBuf = new Float32Array(micAnalyser.fftSize);
     const sink = audioCtx.createGain();
     sink.gain.value = 0;                             // keeps the graph running, silently
-    src.connect(micAnalyser).connect(sink).connect(audioCtx.destination);
-    setInterval(listenForClap, 25);
+    micSource.connect(micAnalyser).connect(sink).connect(audioCtx.destination);
+    if (!micTimer) micTimer = setInterval(listenForClap, 25);
     reportMic('listening');
   } catch (e) { reportMic('error: ' + e.message); }
 }
 
 function listenForClap() {
+  if (!micAnalyser) return;
   micAnalyser.getFloatTimeDomainData(micBuf);
   let peak = 0, sum = 0;
   for (const v of micBuf) { const a = Math.abs(v); if (a > peak) peak = a; sum += v * v; }

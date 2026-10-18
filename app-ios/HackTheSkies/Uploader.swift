@@ -4,8 +4,16 @@ import Foundation
 final class Uploader: NSObject, ObservableObject, URLSessionTaskDelegate {
     @Published private(set) var progress: Double = 0
 
+    /// The laptop's address as typed or from the QR code. Typed without "http://" (like the game
+    /// server's "10.0.0.5:8443"), or with a stray space, URLComponents finds no host in it.
+    static func laptop(_ server: String) -> URLComponents? {
+        let address = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = URLComponents(string: address.contains("://") ? address : "http://" + address)
+        return components?.host?.isEmpty == false ? components : nil
+    }
+
     func upload(zip: URL, server: String, name: String) async throws {
-        guard var components = URLComponents(string: server) else { throw URLError(.badURL) }
+        guard var components = Self.laptop(server) else { throw URLError(.badURL) }
         components.path = "/api/scans"
         components.queryItems = [URLQueryItem(name: "name", value: name)]
         guard let url = components.url else { throw URLError(.badURL) }

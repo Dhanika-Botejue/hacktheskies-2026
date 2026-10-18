@@ -21,6 +21,31 @@ function percentile(sorted: Float32Array, p: number) {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
 }
 
+const KEEP_RADIUS = 1.5; // × the distance from the middle that holds 90% of the splats
+const Z_UP_PENALTY = 0.7;
+
+/**
+ * Drop splats far outside the scan itself. Scaniverse exports wrap the room in a background
+ * shell tens to hundreds of metres out (a few % of the splats); left in, it stretches the height
+ * range so the floor fit lands on the shell and the map comes out upside down and metres up.
+ */
+function withoutFarSplats(pts: Float32Array): Float32Array {
+  const n = pts.length / 3;
+  if (n < 100) return pts;
+  const median = (axis: number) => {
+    const v = new Float32Array(n);
+    for (let i = 0; i < n; i++) v[i] = pts[3 * i + axis];
+    return percentile(v.sort(), 0.5);
+  };
+  const [cx, cy, cz] = [median(0), median(1), median(2)];
+  const r = new Float32Array(n);
+  for (let i = 0; i < n; i++) r[i] = Math.hypot(pts[3 * i] - cx, pts[3 * i + 1] - cy, pts[3 * i + 2] - cz);
+  const cut = KEEP_RADIUS * percentile(r.slice().sort(), 0.9);
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) if (r[i] <= cut) out.push(pts[3 * i], pts[3 * i + 1], pts[3 * i + 2]);
+  return Float32Array.from(out);
+}
+
 interface Peaks {
   low: { h: number; count: number };
   high: { h: number; count: number };
@@ -56,11 +81,14 @@ function findPeaks(pts: Float32Array, up: THREE.Vector3): Peaks {
  * A floor is a dense plane at the low end; scanners see more floor than ceiling, so the
  * direction with the stronger low-end peak wins.
  */
-export function autoCalibrate(pts: Float32Array, upCandidates: THREE.Vector3[]): number[] {
+export function autoCalibrate(allPts: Float32Array, upCandidates: THREE.Vector3[]): number[] {
+  const pts = withoutFarSplats(allPts);
   let best: { up: THREE.Vector3; floor: number; score: number } | null = null;
   for (const up of upCandidates) {
     const peaks = findPeaks(pts, up);
-    const score = peaks.low.count * (upCandidates.length > 1 && peaks.low.count < peaks.high.count ? 0.5 : 1);
+    // Splat files (Scaniverse, Polycam, 3DGS) almost always have ±Y vertical; Z only wins clearly.
+    const zUp = Math.abs(up.z) > Math.abs(up.y) ? Z_UP_PENALTY : 1;
+    const score = peaks.low.count * zUp * (upCandidates.length > 1 && peaks.low.count < peaks.high.count ? 0.5 : 1);
     if (!best || score > best.score) best = { up: up.clone().normalize(), floor: peaks.low.h, score };
   }
   const { up, floor } = best!;

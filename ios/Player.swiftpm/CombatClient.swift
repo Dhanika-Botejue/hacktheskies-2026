@@ -5,9 +5,10 @@ import Observation
 import UIKit
 
 /// Finger-gun shooting. Streams the camera to the shooting server (combat/server.py), which finds
-/// your finger-gun pose and the chest tags in view and decides hits; hears reload claps on the
+/// your finger-gun pose and the players in view and decides hits; hears reload claps on the
 /// microphone; and tells you what happened by voice and vibration, since the phone is strapped to
-/// your chest. Same protocol as the web player page, combat/static/phone.html.
+/// your chest: hits, going down and walking back to your base, the flag changing hands, who won.
+/// Same protocol as the web player page, combat/static/phone.html.
 @Observable
 final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
     enum Flash { case hit, hurt, down }
@@ -21,7 +22,8 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
     var gun = "ready"  // "ready" | "arming" (just reloaded) | "reload" (clap to reload)
     var status = "Connecting…"
     var kills = 0
-    var score = ""
+    var score = ""  // the flag clocks, or the kills when there's no flag
+    var respawnMode = "timer"  // when down: "base" (walk back to your base) | "timer"
     var error: String?
     var flash: Flash?  // brief full-screen colour after a hit
     var mic = "off"  // reload-clap microphone: "listening", "no mic permission", …
@@ -41,6 +43,8 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
     @ObservationIgnored private var lastSent: TimeInterval = 0
     @ObservationIgnored private var lastReloads: Int?
     @ObservationIgnored private var lastGun: String?
+    @ObservationIgnored private var lastFlagOwner: String?
+    @ObservationIgnored private var team = "red"
 
     override init() {
         super.init()
@@ -68,6 +72,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
             return
         }
         error = nil
+        self.team = team
         link.connect(url: url, hello: ["type": "register", "player_id": tag, "team": team])
         clap.start { [weak self] peak in
             // Every clap is reported with its loudness: the server gives it to the phone that heard it loudest.
@@ -123,9 +128,10 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
             frameResult(msg)
         case "idle":
             inFlightSince = nil
-            if inGame { say("Game over") }
+            if inGame { say(gameOver(msg["scores"] as? [String: Any])) }
             inGame = false
             lastGun = nil
+            lastFlagOwner = nil
             status = "Waiting for the host to start the match"
         case "shot_event":
             wasHit(msg)
@@ -145,25 +151,37 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         hp = d["hp"] as? Int ?? hp
         maxHp = d["max_hp"] as? Int ?? maxHp
         kills = d["kills"] as? Int ?? kills
-        if let s = d["scores"] as? [String: Any] {
+        respawnMode = d["respawn_mode"] as? String ?? respawnMode
+        let flag = d["flag"] as? [String: Any]
+        let owner = flag?["owner"] as? String
+        if let flag, let held = flag["held"] as? [String: Any] {
+            let red = held["red"] as? Double ?? 0, blue = held["blue"] as? Double ?? 0
+            let win = flag["win_s"] as? Double ?? 0
+            score = "⚑ Red \(Self.clock(red)) · Blue \(Self.clock(blue)) / \(Self.clock(win))"
+        } else if let s = d["scores"] as? [String: Any] {
             score = "Red \(s["red_kills"] as? Int ?? 0) – \(s["blue_kills"] as? Int ?? 0) Blue"
         }
         status = Self.describe(d)
 
         // You can't see the screen: every change you need to know about is spoken.
+        var news: [String] = []
         let gunNow = d["gun"] as? String ?? "ready"
         let reloads = d["reloads"] as? Int ?? 0
         if justStarted {
-            say("Go!")
+            news.append("Go!")
         } else if !wasAlive && alive {
-            say("Back in")
+            news.append("Back in")
         } else if wasAlive && alive {
             if let last = lastReloads, reloads > last {
-                say("Reloaded")
+                news.append("Reloaded")
             } else if gunNow == "ready" && lastGun == "arming" {
-                say("Ready")
+                news.append("Ready")
             }
         }
+        if let owner, owner != lastFlagOwner, !justStarted {
+            news.append(owner == team ? "We took the flag" : "They took the flag")
+        }
+        lastFlagOwner = owner
         lastReloads = reloads
         lastGun = gunNow
         gun = gunNow
@@ -171,17 +189,33 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         if d["shot_fired"] as? Bool == true {
             let target = d["aiming_tag_id"] as? Int
             let killed = d["shot_killed"] as? Bool == true
-            say(killed ? "Eliminated player \(target ?? 0)" : "Hit! Clap to reload")
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             show(.hit)
+            news.removeAll { $0 == "Reloaded" || $0 == "Ready" }  // can't be: the hit emptied the gun
+            news.insert(killed ? "Eliminated player \(target ?? 0)" : "Hit! Clap to reload", at: 0)
         }
+        if !news.isEmpty { say(news.joined(separator: ". ")) }
+    }
+
+    private func gameOver(_ scores: [String: Any]?) -> String {
+        switch scores?["winner"] as? String {
+        case team?: "Game over. We win!"
+        case "tie": "Game over. It's a tie"
+        case nil: "Game over"
+        default: "Game over. They win"
+        }
+    }
+
+    static func clock(_ s: Double) -> String {
+        String(format: "%d:%02d", Int(s) / 60, Int(s) % 60)
     }
 
     private func wasHit(_ d: [String: Any]) {
         hp = d["hp"] as? Int ?? hp
         if d["killed"] as? Bool == true {
             alive = false
-            say("You're down", urgent: true)
+            respawnMode = d["respawn_mode"] as? String ?? respawnMode
+            say(respawnMode == "base" ? "You're down. Back to your base" : "You're down", urgent: true)
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             show(.down)
         } else {
@@ -203,7 +237,7 @@ final class CombatClient: NSObject, AVSpeechSynthesizerDelegate {
         let target = d["aiming_tag_id"] as? Int
         switch d["status"] as? String {
         case "hit": return "HIT player \(target ?? 0)!"
-        case "dead": return "You're down"
+        case "dead": return d["respawn_mode"] as? String == "base" ? "You're down · walk back to your base" : "You're down"
         case "reload": return "Clap to reload"
         case "arming": return "Reloaded · ready in a moment"
         case "no_hand": return "Ready · hold your finger gun in view"

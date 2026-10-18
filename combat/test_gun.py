@@ -11,9 +11,9 @@ exactly that.  Everything after it is the real server code: aiming windows,
 the gun, hits, HP, kills, mic + camera reload claps, the clap referee, scores,
 reconnects.
 
-Respawning is a placeholder (the walk-back-to-your-spawn-point code replaces
-it), so the automatic respawn is switched off here and respawns are done by
-calling player.respawn() — exactly what that code should call.
+The match rules (respawning at your base, the flag: objectives.py, tested in
+test_objectives.py) are switched off here, and respawns are done by calling
+player.respawn() — exactly what they call.
 
     python test_gun.py
 """
@@ -152,9 +152,10 @@ class Host:
 async def run() -> int:
     server._process_frame = fake_process_frame
 
-    async def no_auto_respawn():          # placeholder respawn off (see top)
-        pass
-    server.game.check_auto_respawns = no_auto_respawn
+    async def no_objectives(positions, now=None, wall=None):   # match rules off (see top)
+        return []
+    server.game.tick = no_objectives
+    server.feed.url = None                # no game server: positions don't matter here
 
     ts = TestServer(server.build_app())
     await ts.start_server()
@@ -258,7 +259,7 @@ async def run() -> int:
         check("shooting a tag nobody's wearing: no hit", r['status'] == 'target_not_in_game', r['status'])
         check('...after those misses the gun is still loaded', r['gun'] == 'ready', r['gun'])
 
-        print("\n8. Respawn (the spawn-point code calls player.respawn())")
+        print("\n8. Respawn (reaching your base calls player.respawn())")
         g.players[2].respawn()
         r = await p2.frame()
         check('P2 back in: alive, 3 HP, gun loaded', r['alive'] and r['hp'] == 3 and r['gun'] == 'ready', r)

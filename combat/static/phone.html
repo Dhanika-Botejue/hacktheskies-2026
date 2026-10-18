@@ -150,7 +150,7 @@
   <!-- Dead screen -->
   <div id="dead">
     <h2>💀 You were killed!</h2>
-    <p>Respawning in…</p>
+    <p id="rlabel">Respawning in…</p>
     <div id="rtimer">—</div>
   </div>
 
@@ -182,6 +182,8 @@ let lastReloads = null; // server's reload counter last frame: +1 = a clap reloa
 let errorShown = false;
 let inGame    = null;   // null = not known yet (joined mid-game: no start sound)
 let respawnAt = null;
+let respawnMode = 'timer';  // when down: 'base' (walk back to your base) | 'timer' (back at respawnAt)
+let flagOwner = null;       // team that owns the flag, to announce when it changes hands
 let idMode    = 'tags'; // how the server tells players apart: 'clothes' (body scan) or 'tags' (bibs)
 
 // ─── Elements ─────────────────────────────────────────────────────────────
@@ -194,6 +196,7 @@ const $rtcl     = document.getElementById('rtcl');
 const $flash    = document.getElementById('flash');
 const $dead     = document.getElementById('dead');
 const $rtimer   = document.getElementById('rtimer');
+const $rlabel   = document.getElementById('rlabel');
 const $idle     = document.getElementById('idle');
 const $tgt      = document.getElementById('tgt');
 const $poseFill = document.getElementById('pose-fill');
@@ -367,6 +370,10 @@ function handleMessage(d) {
     inGame    = true;
     alive     = d.alive;
     respawnAt = d.respawn_at ? d.respawn_at * 1000 : null;
+    respawnMode = d.respawn_mode || respawnMode;
+    const owner = d.flag ? d.flag.owner : null;
+    if (owner && owner !== flagOwner && !justStarted) say(owner === team ? 'We took the flag' : 'They took the flag', 300);
+    flagOwner = owner;
     if (d.hp !== undefined) renderHp(d.hp, d.max_hp);
 
     // Pose bar
@@ -407,8 +414,11 @@ function handleMessage(d) {
     $tgt.textContent = msg;
     $tgt.className   = cls;
 
-    // Scores: kills-based
-    if (d.scores) {
+    // Scores: the flag clocks (the team that owns the flag longest wins), else kills
+    if (d.flag) {
+      $score.textContent = `⚑ 🔴 ${clock(d.flag.held.red)}  🔵 ${clock(d.flag.held.blue)} / ${clock(d.flag.win_s)}`
+        + `  · you: ${d.kills ?? 0}K`;
+    } else if (d.scores) {
       $score.textContent =
         `🔴 ${d.scores.red_kills}K  🔵 ${d.scores.blue_kills}K  · you: ${d.kills ?? 0}`;
     }
@@ -432,6 +442,8 @@ function handleMessage(d) {
     if (d.killed) {
       alive     = false;
       respawnAt = d.respawn_at * 1000;
+      respawnMode = d.respawn_mode || respawnMode;
+      if (respawnMode === 'base') say('Back to your base', 3400);
       $dead.classList.add('show');
       triggerFlash('#ef4444', 'YOU WERE KILLED!');
     } else {
@@ -440,9 +452,20 @@ function handleMessage(d) {
   }
 
   else if (d.type === 'idle') {
-    if (inGame === true) sfx.over();                // playing -> stopped by the host
+    const s = d.scores;
+    if (inGame === true) {                          // playing -> over (the host, or a team's flag time)
+      sfx.over();
+      if (s && s.winner) say(s.winner === 'tie' ? "It's a tie" : s.winner === team ? 'We win!' : 'They win', 2700);
+    }
+    if (inGame === true && s && s.reason) {
+      $idle.querySelector('span').innerHTML =
+        `Game over!<br>${s.winner === 'tie' ? "It's a tie" : `${s.winner === 'red' ? '🔴 Red' : '🔵 Blue'} wins`}`
+        + (s.flag ? `<br>⚑ 🔴 ${clock(s.red_flag_s)}  🔵 ${clock(s.blue_flag_s)}` : '')
+        + `<br>🔴 ${s.red_kills}K  🔵 ${s.blue_kills}K`;
+    }
     inGame  = false;
     lastGun = null;                                 // the next game starts with a fresh gun
+    flagOwner = null;
     $idle.classList.add('show');
   }
 
@@ -461,7 +484,7 @@ function statusText(d) {
   const what = idMode === 'clothes' ? 'player' : 'tag';
   switch (d.status) {
     case 'hit':                return [`💥 HIT Player ${tgt}!`, 'hit'];
-    case 'dead':               return ['💀 You are down', ''];
+    case 'dead':               return [respawnMode === 'base' ? '💀 Down · walk back to your base' : '💀 You are down', ''];
     case 'reload':             return [`👏 Hit! Clap to reload (${d.n_hands ?? 0} hand${d.n_hands === 1 ? '' : 's'} seen)`, 'warn'];
     case 'arming':             return [`⏳ Reloaded · ready in ${d.arming_left}s`, 'warn'];
     case 'no_hand':            return ['✋ No hand seen · hold your finger gun in view', ''];
@@ -835,7 +858,10 @@ function drawOverlay(landmarks, tagsSeen, aimedId, frameW, frameH, otherHands) {
 
 // ─── Dead timer ───────────────────────────────────────────────────────────
 function tickRespawn() {
-  if (!alive && respawnAt) {
+  $rlabel.textContent = respawnMode === 'base' ? 'Walk back to your base' : 'Respawning in…';
+  if (!alive && respawnMode === 'base') {
+    $rtimer.textContent = '🏠';
+  } else if (!alive && respawnAt) {
     const secs = Math.max(0, Math.ceil((respawnAt - Date.now()) / 1000));
     $rtimer.textContent = secs > 0 ? `${secs}s` : 'Respawning…';
   } else if (!alive) {
@@ -845,6 +871,7 @@ function tickRespawn() {
 setInterval(tickRespawn, 500);
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function clock(s) { s = Math.floor(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 </script>
 </body>
 </html>

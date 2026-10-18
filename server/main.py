@@ -26,8 +26,10 @@ HOST_PARTICLES = 120
 SEND_TIMEOUT_S = 1.0
 TEAMS = ("red", "blue")
 MAX_TAG = 34  # player bibs are tag25h9 AprilTags 1-34, the IDs the shooting server (combat/) uses
-MAX_POINTS = 26
 POINT_RADIUS = (0.5, 10.0)  # m
+# The game's objectives (the "points" on the map): each team's base, where its downed players come
+# back in, and the flag in the middle. The shooting server (combat/) runs the rules.
+OBJECTIVES = {("base", "red"): "Red base", ("base", "blue"): "Blue base", ("flag", None): "Flag"}
 
 
 @dataclass
@@ -76,6 +78,7 @@ class Game:
         self.players: dict[str, Player] = {}
         self.hosts: set[WebSocket] = set()
         self.phones: dict[WebSocket, str] = {}
+        self.watchers: set[WebSocket] = set()  # read-only: the shooting server, for positions and objectives
 
     def _walls_array(self) -> np.ndarray:
         return np.array(self.map["walls"], dtype=float).reshape(-1, 4)
@@ -86,7 +89,8 @@ class Game:
         MAP_FILE.write_text(json.dumps(new_map))
 
     async def broadcast(self, msg: dict, hosts=True, phones=True) -> None:
-        targets = (list(self.hosts) if hosts else []) + (list(self.phones) if phones else [])
+        """phones: the phones and the watchers, which get the same particle-free updates."""
+        targets = (list(self.hosts) if hosts else []) + (list(self.phones) + list(self.watchers) if phones else [])
         text = json.dumps(msg)
         # A phone that stops reading (e.g. its screen locked) mustn't stall updates to everyone else.
         await asyncio.gather(*(asyncio.wait_for(ws.send_text(text), SEND_TIMEOUT_S) for ws in targets),
@@ -95,7 +99,7 @@ class Game:
     async def broadcast_loop(self) -> None:
         while True:
             await asyncio.sleep(1 / BROADCAST_HZ)
-            if not (self.hosts or self.phones):
+            if not (self.hosts or self.phones or self.watchers):
                 continue
             players = list(self.players.values())
             await self.broadcast(
@@ -125,7 +129,7 @@ class Game:
         elif kind == "remove" and p:
             del self.players[p.id]
         elif kind == "points":
-            # Key positions the host marked on the map, replaced as a whole.
+            # Bases and flag the host marked on the map, replaced as a whole.
             self.set_map({**self.map, "points": clean_points(msg.get("points"))})
             await self.broadcast({"t": "map", "map": self.map})
 
@@ -148,20 +152,28 @@ def parse_team(v) -> str | None:
 
 
 def clean_points(points) -> list[dict]:
-    """Key positions: [{id, name, x, y, r}] in map metres, r = capture radius."""
-    out = []
+    """Objectives: [{id, kind, team, name, x, y, r}] in map metres, r = radius. kind "base" (with
+    its team) or "flag"; one of each at most, the first one given wins."""
+    out = {}
     for p in points if isinstance(points, list) else []:
         try:
-            out.append({
-                "id": str(p["id"])[:40],
-                "name": str(p.get("name") or "?")[:24],
+            kind = str(p["kind"])
+            team = parse_team(p.get("team")) if kind == "base" else None
+            name = OBJECTIVES[(kind, team)]
+            if (kind, team) in out:
+                continue
+            out[(kind, team)] = {
+                "id": f"{kind}-{team}" if team else kind,
+                "kind": kind,
+                **({"team": team} if team else {}),
+                "name": name,
                 "x": round(float(p["x"]), 2),
                 "y": round(float(p["y"]), 2),
                 "r": round(min(max(float(p.get("r", 2.0)), POINT_RADIUS[0]), POINT_RADIUS[1]), 2),
-            })
+            }
         except (KeyError, TypeError, ValueError):
             continue
-    return out[:MAX_POINTS]
+    return list(out.values())
 
 
 game = Game()
@@ -190,7 +202,7 @@ def get_map():
 @app.put("/api/map")
 async def put_map(request: Request):
     new_map = await request.json()
-    # Key positions only change through the host's "points" message: pages that save the map
+    # Objectives (bases, flag) only change through the host's "points" message: pages that save the map
     # (walls on the 2D host page) may hold an old copy of them. The viewer clears them when the
     # map's frame changes (a new scan, flip or rotate), since they'd no longer line up.
     new_map["points"] = [] if new_map.pop("pointsReset", False) else game.map.get("points", [])
@@ -227,6 +239,8 @@ async def websocket(ws: WebSocket):
     try:
         if role == "host":
             game.hosts.add(ws)
+        elif role == "watch":
+            game.watchers.add(ws)
         else:
             pid = str(hello["id"])
             name = str(hello.get("name") or pid[:6])
@@ -248,6 +262,7 @@ async def websocket(ws: WebSocket):
         pass
     finally:
         game.hosts.discard(ws)
+        game.watchers.discard(ws)
         game.phones.pop(ws, None)
         if pid in game.players and pid not in game.phones.values():
             game.players[pid].connected = False

@@ -1,9 +1,12 @@
 """
-server.py  (simplified — shoot-only)
-======================================
+server.py
+=========
 HackTheSkies: finger-gun shooting game.  Who you shot is told by what they're
 wearing (ID_MODE 'clothes': everyone's body scan from the scan station, see
 person_id.py), or by a printed AprilTag bib (ID_MODE 'tags', see tag_detector.py).
+It also runs the match (objectives.py): downed players come back in at their
+base, and the team that holds the flag longest wins.  Where everyone is comes
+from the game server (tracking.py; GAME_SERVER, default https://127.0.0.1:8443).
 
 WebSocket protocol — phone (/ws/phone)
 ---------------------------------------
@@ -19,6 +22,10 @@ WebSocket protocol — phone (/ws/phone)
   Server -> Phone:  JSON  shot_event     (push, when this player is hit)
   In frame_result, tags_seen / aiming_tag_id are the targets in view whatever
   ID_MODE is: bib tags, or people (kind "person"; id null = not recognised).
+  frame_result and shot_event carry respawn_mode: 'base' (when down, walk back
+  to your base) or 'timer' (back at respawn_at); frame_result carries flag:
+  {owner, challenger, win_s, held: {red, blue}} (null: no flag on the map), and
+  idle carries the scores, with the winner once a game is over.
 
 WebSocket protocol — scan station (/ws/scan, static/scan.html)
 ---------------------------------------------------------------
@@ -29,14 +36,16 @@ WebSocket protocol — scan station (/ws/scan, static/scan.html)
 
 WebSocket protocol — host (/ws/host)
 --------------------------------------
-  Host -> Server:  JSON  {"type":"start_game"} | {"type":"stop_game"}
-  Server -> Host:  JSON  state_update  (every 500 ms)
+  Host -> Server:  JSON  {"type":"start_game","win_s":120} (win_s optional) | {"type":"stop_game"}
+                         {"type":"respawn_player","player_id":7}   (back in by hand)
+  Server -> Host:  JSON  state_update  (every 250 ms; objectives: bases, flag, clocks)
   Server -> Host:  JSON  shot_event    (push)
-  Server -> Host:  JSON  game_started | game_over
+  Server -> Host:  JSON  game_started | game_over (scores.reason 'flag' | 'host')
+  Server -> Host:  JSON  respawned {player_id, how: 'base'|'timer'|'host'} | flag_taken {team, from}
 
 REST
 -----
-  POST /api/start         Start game
+  POST /api/start         Start game (optional JSON body {"win_s": 120})
   POST /api/stop          Stop game
   GET  /api/state         Full game snapshot
   GET  /api/network-info  Returns LAN IP for phone auto-fill
@@ -66,6 +75,7 @@ from hand_detector import HandDetector, INDEX_MCP, INDEX_TIP, ClapTracker, own_h
 from person_id import (SCAN_SAMPLES, Gallery, PeopleMatcher, PersonDetector, ScanSession, aim_candidates,
                        box_corners, box_iou, hands_mask, is_own_arm, pick_aimed_person)
 from tag_detector import MAX_PLAYER_ID, TagDetector, pick_aimed_tag
+from tracking import PositionFeed, ws_url
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +93,8 @@ HTTPS_PORT = int(os.environ.get('HTTPS_PORT', PORT + 1))
 
 # How the target is told: 'clothes' (pre-game body scan at /scan) or 'tags' (printed bibs)
 ID_MODE = os.environ.get('HTS_ID_MODE', 'clothes')
+# Where players are (positions, bases and flag): the game server, as the viewer's GAME_SERVER
+GAME_SERVER = os.environ.get('GAME_SERVER', 'https://127.0.0.1:8443')
 
 POSE_ARMED_THRESHOLD = 0.75   # pose bar colour on the phone (information only)
 # One-handed finger gun (game_state.Gun): while loaded it fires on any frame
@@ -97,7 +109,7 @@ TAG_MEMORY_S         = 0.8
 PERSON_MEMORY_S      = 0.3
 MAX_DESCRIBED        = 2      # people near the finger's line matched per frame (~12 ms each)
 MAX_FRAME_BYTES      = 2 * 1024 * 1024
-STATE_BROADCAST_INTERVAL = 0.5
+STATE_BROADCAST_INTERVAL = 0.25   # also how often the objectives run (respawns, the flag)
 DIAG_LOG_INTERVAL    = 1.0   # seconds between per-player "why didn't it fire" log lines
 # Set HTS_DEBUG_FRAMES=<dir> to save ~2 raw frames/sec per player (filename has the status)
 DEBUG_FRAME_DIR      = os.environ.get('HTS_DEBUG_FRAMES')
@@ -127,6 +139,7 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='frame-worker')
 game         = GameState()
 gallery      = Gallery(SCANS_DIR / 'gallery.json')   # everyone's body scan, kept across restarts
 host_sockets: Set[web.WebSocketResponse] = set()
+feed         = PositionFeed(ws_url(GAME_SERVER), on_points=game.objectives.set_points)
 
 
 # ── Frame processing (runs in thread pool) ────────────────────────────────────
@@ -284,11 +297,13 @@ async def _settle_claps():
 
 
 def _snapshot() -> dict:
-    """game.snapshot() plus whether each player has been scanned."""
+    """game.snapshot() plus whether each player has been scanned, and whether
+    the game server (positions) is connected."""
     snap = game.snapshot()
     for pid, p in snap['players'].items():
         p['scanned'] = int(pid) in gallery
     snap['id_mode'] = ID_MODE
+    snap['objectives']['tracking'] = feed.connected
     return snap
 
 
@@ -517,6 +532,8 @@ async def ws_phone(request: web.Request) -> web.WebSocketResponse:
                     'alive':         player.alive,
                     'respawn_at':    player.respawn_at if not player.alive else None,
                     'remaining':     round(player.seconds_until_respawn(), 1),
+                    'respawn_mode':  player.respawn_mode,
+                    'flag':          game.objectives.brief(),
                     'scores':        game.scores(),
                     'frame_w':       det.get('frame_w'),
                     'frame_h':       det.get('frame_h'),
@@ -646,11 +663,18 @@ async def ws_host(request: web.Request) -> web.WebSocketResponse:
                     continue
                 t = data.get('type')
                 if t == 'start_game':
-                    await game.start_game()
-                    await _broadcast_host({'type': 'game_started'})
+                    await _start(data.get('win_s'))
                 elif t == 'stop_game':
                     scores = await game.stop_game()
                     await _broadcast_host({'type': 'game_over', 'scores': scores})
+                elif t == 'respawn_player':
+                    try:
+                        pid = int(data.get('player_id'))
+                    except (TypeError, ValueError):
+                        continue
+                    if await game.respawn_player(pid):
+                        log.info(f'Player {pid} back in (by the host)')
+                        await _broadcast_host({'type': 'respawned', 'player_id': pid, 'how': 'host'})
             elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
                 break
     finally:
@@ -661,11 +685,19 @@ async def ws_host(request: web.Request) -> web.WebSocketResponse:
 
 # ── REST ──────────────────────────────────────────────────────────────────────
 
+async def _start(win_s=None):
+    await game.start_game(win_s)
+    await _broadcast_host({'type': 'game_started', 'win_s': game.objectives.win_s})
+
+
 async def api_start(request):
     try:
-        await game.start_game()
-        await _broadcast_host({'type': 'game_started'})
-        return web.json_response({'ok': True})
+        body = await request.json() if request.can_read_body else {}
+    except json.JSONDecodeError:
+        body = {}
+    try:
+        await _start(body.get('win_s') if isinstance(body, dict) else None)
+        return web.json_response({'ok': True, 'win_s': game.objectives.win_s})
     except Exception as e:
         return web.json_response({'ok': False, 'error': str(e)}, status=500)
 
@@ -790,9 +822,11 @@ async def tags_zip(request):
 # ── Background broadcaster ────────────────────────────────────────────────────
 
 async def _state_broadcaster():
+    """Runs the match (respawns at the bases, the flag, a win) and keeps the host screens up to date."""
     while True:
         await asyncio.sleep(STATE_BROADCAST_INTERVAL)
-        await game.check_auto_respawns()
+        for event in await game.tick(feed.positions(time.monotonic())):
+            await _broadcast_host(event)
         if host_sockets:
             snap = _snapshot()
             snap['type'] = 'state_update'
@@ -803,12 +837,15 @@ async def _state_broadcaster():
 
 async def on_startup(app):
     app['broadcaster'] = asyncio.create_task(_state_broadcaster())
+    app['feed'] = asyncio.create_task(feed.run()) if feed.url else None
     if DEBUG_FRAME_DIR:
         Path(DEBUG_FRAME_DIR).mkdir(parents=True, exist_ok=True)
         log.info(f'Saving debug frames to {DEBUG_FRAME_DIR}')
 
 async def on_cleanup(app):
     app['broadcaster'].cancel()
+    if app['feed']:
+        app['feed'].cancel()
     _executor.shutdown(wait=False)
 
 
@@ -875,7 +912,7 @@ async def _serve():
     if ssl_ctx:
         await web.TCPSite(runner, HOST, HTTPS_PORT, ssl_context=ssl_ctx).start()
     log.info('=' * 60)
-    log.info(f'  HackTheSkies  (shoot-only mode, players told apart by {ID_MODE})')
+    log.info(f'  HackTheSkies  (players told apart by {ID_MODE}; positions from {GAME_SERVER})')
     log.info(f'  Host dashboard:  http://{lan_ip}:{PORT}/')
     if ssl_ctx:
         log.info(f'  Phone client:    https://{lan_ip}:{HTTPS_PORT}/phone   (camera needs https)')

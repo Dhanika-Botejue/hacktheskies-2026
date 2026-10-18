@@ -193,8 +193,11 @@ function handleMessage(d) {
     addLog(d.killed ? `Player ${d.shooter_id} killed Player ${d.target_id}`
                     : `Player ${d.shooter_id} hit Player ${d.target_id} (${d.hp}/${d.max_hp} HP)`, 'shot');
   }
-  else if (d.type === 'flag_captured') {
-    addLog(`Flag ${d.flag_id} captured by ${d.team} team`, 'capture');
+  else if (d.type === 'flag_taken') {
+    addLog(`${d.team} team took the flag${d.from ? ` from ${d.from}` : ''}`, 'capture');
+  }
+  else if (d.type === 'respawned') {
+    addLog(`Player ${d.player_id} back in (${{ base: 'reached base', host: 'by the host', timer: 'timer' }[d.how] || d.how})`, 'sys');
   }
   else if (d.type === 'player_joined') {
     addLog(`Player ${d.player.player_id} (${d.player.team}) joined`, 'sys');
@@ -212,7 +215,10 @@ function handleMessage(d) {
     gameActive = false;
     $btnStart.disabled = false; $btnStop.disabled = true;
     updateScores(d.scores);
-    addLog(`Game over! Winner: ${d.scores.winner} | Red: ${d.scores.red_kills} kills  Blue: ${d.scores.blue_kills} kills`, 'sys');
+    const s = d.scores;
+    addLog(`Game over! Winner: ${s.winner}${s.reason === 'flag' ? ' (flag time)' : ''}`
+      + (s.flag ? ` | flag: red ${clock(s.red_flag_s)}  blue ${clock(s.blue_flag_s)}` : '')
+      + ` | kills: red ${s.red_kills}  blue ${s.blue_kills}`, 'sys');
   }
 }
 
@@ -291,16 +297,18 @@ function renderPlayers() {
     <div class="player-row ${p.alive ? '' : 'dead'}">
       <div class="dot" style="background:${p.team === 'red' ? '#f87171' : '#60a5fa'}"></div>
       <span class="name">P${p.player_id}${p.connected === false ? ' 📵 offline' : ''}${idMode === 'clothes' && p.scanned === false ? ' <span style="color:#fbbf24" title="Not scanned: shots at this player can\'t count">⚠️ not scanned</span>' : ''}</span>
-      <span class="status">${p.kills}K / ${p.deaths}D · ${p.alive ? '❤️'.repeat(p.hp) + '🖤'.repeat(p.max_hp - p.hp) : `💀 ${p.seconds_to_respawn}s`}</span>
+      <span class="status">${p.kills}K / ${p.deaths}D · ${p.alive ? '❤️'.repeat(p.hp) + '🖤'.repeat(p.max_hp - p.hp) : p.respawn_mode === 'base' ? '💀 to base' : `💀 ${p.seconds_to_respawn}s`}</span>
     </div>
   `).join('');
 }
 
 // ─── Scores ───────────────────────────────────────────────────────────────
+const clock = sec => { sec = Math.floor(sec || 0); return `${Math.floor(sec / 60)}:${pad(sec % 60)}`; };
 function updateScores(s) {
   if (!s) return;
-  $scoreRed.textContent  = `${s.red_kills} kills`;
-  $scoreBlue.textContent = `${s.blue_kills} kills`;
+  // With a flag on the map its clocks decide the winner; kills only break a tie
+  $scoreRed.textContent  = s.flag ? `⚑ ${clock(s.red_flag_s)} · ${s.red_kills} kills` : `${s.red_kills} kills`;
+  $scoreBlue.textContent = s.flag ? `⚑ ${clock(s.blue_flag_s)} · ${s.blue_kills} kills` : `${s.blue_kills} kills`;
   document.querySelector('.red-card') .classList.toggle('winner', s.winner === 'red');
   document.querySelector('.blue-card').classList.toggle('winner', s.winner === 'blue');
 }

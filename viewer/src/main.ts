@@ -1,20 +1,19 @@
 // Spectator viewer: shows the active map as a Gaussian splat, walked through first-person like a
 // shooter map, with the players' live positions from the game server, their hit points and shots
-// from the shooting server, and the key positions teams fight over.
+// from the shooting server, and the match: the bases and the flag teams fight over.
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import type { MapInfo } from "../server/maps.ts";
 import { align2D, wallPoints } from "./align.ts";
 import { autoCalibrate, currentUp, nextUpAxis, nudgeFloor, rotateY90, sampleCenters } from "./calibrate.ts";
-import { CombatLink, TEAM_COLORS } from "./combat.ts";
+import { CombatLink, TEAM_COLORS, TEAM_NAMES, type Team, clock } from "./combat.ts";
 import { SpectatorControls } from "./controls.ts";
-import { GameLink, type KeyPoint, isLinked, mapOrigin, publishGameMap, yawToHeading } from "./game.ts";
+import { GameLink, type MapObjective, isLinked, mapOrigin, publishGameMap, yawToHeading } from "./game.ts";
 import {
-  Feed, Minimap, drawCompass, renderMatchPanel, renderPlayersPanel, renderPointsPanel, renderScoreboard,
+  Feed, Minimap, drawCompass, renderMatchPanel, renderObjectivesPanel, renderPlayersPanel, renderScoreboard,
 } from "./hud.ts";
-import { MarkerLayer } from "./markers.ts";
 import { PlayerLayer, playerColor } from "./players.ts";
-import { KeyPointLayer } from "./points.ts";
+import { ObjectiveLayer, SLOTS } from "./points.ts";
 import { TracerLayer } from "./tracers.ts";
 import {
   type MapsState, renderMapList, setHud, setStatus, setupConnectPanel, setupMerge, setupUploads, subscribeMaps,
@@ -30,17 +29,14 @@ scene.add(new SparkRenderer({ renderer }));
 scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 2.2));
 
 const controls = new SpectatorControls(canvas);
-// Flags and bases will go here once the game server tracks them.
-const markers = new MarkerLayer();
-scene.add(markers.group);
 
 const labels = document.querySelector<HTMLElement>("#labels")!;
 const game = new GameLink();
 const combat = new CombatLink();
 const players = new PlayerLayer(game, combat, labels);
 scene.add(players.group);
-const keyPoints = new KeyPointLayer(game, labels);
-scene.add(keyPoints.group);
+const objectives = new ObjectiveLayer(game, labels);
+scene.add(objectives.group);
 const tracers = new TracerLayer();
 scene.add(tracers.group);
 const minimap = new Minimap(game);
@@ -502,76 +498,72 @@ function updatePlacingHint() {
   placeMarker.visible = !!placing?.at;
   if (placing?.at) placeMarker.position.set(placing.at.x, 0.03, placing.at.z);
   const hint = document.querySelector<HTMLElement>("#place-hint")!;
-  hint.hidden = !placing && !addingPoint;
+  hint.hidden = !placing && !placingObjective;
   if (placing) {
     hint.textContent = placing.at
       ? `Now click the direction ${nameOf(placing.id)} is facing. Esc cancels.`
       : `Click where ${nameOf(placing.id)} is standing. Esc cancels. (Or walk there in first person and press P.)`;
-  } else if (addingPoint) {
-    hint.textContent = `Click the map where key position ${nextPointName()} goes. Esc cancels.`;
+  } else if (placingObjective) {
+    hint.textContent = `Click the map where the ${placingObjective.name.toLowerCase()} goes. Esc cancels.`;
   }
 }
 
-// ---- Key positions: the host marks them on the top-down map ---------------------------------
+// ---- Objectives: the host puts the bases and the flag on the top-down map --------------------
 
-const POINT_RADIUS = { min: 0.5, max: 10, start: 2.5 };
-let addingPoint = false;
+const POINT_RADIUS = { min: 0.5, max: 10 };
+let placingObjective: (typeof SLOTS)[number] | null = null;
 
-function nextPointName() {
-  const used = new Set(keyPoints.points.map((p) => p.name));
-  return [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].find((c) => !used.has(c)) ?? `P${keyPoints.points.length + 1}`;
-}
-
-function setPoints(points: KeyPoint[]) {
+function setPoints(points: MapObjective[]) {
   if (!game.map) return;
   game.map = { ...game.map, points }; // show it now; the server's map message confirms it
   game.setPoints(points);
-  keyPoints.update(players.poses());
+  objectives.update(combat.objectives);
 }
 
-function startAddingPoint() {
+function startPlacingObjective(id: string) {
   if (!game.connected) return feed.push("Game server offline: start run.py first", "#ff5c6c");
   placing = null;
-  addingPoint = true;
+  placingObjective = SLOTS.find((s) => s.id === id) ?? null;
   controls.setMode("overview");
   updatePlacingHint();
 }
 
-function stopAddingPoint() {
-  addingPoint = false;
+function stopPlacingObjective() {
+  placingObjective = null;
   updatePlacingHint();
 }
 
-const pointActions = {
-  rename: (id: string) => {
-    const p = keyPoints.points.find((q) => q.id === id);
-    const name = p && prompt("Name this key position", p.name)?.trim();
-    if (p && name) setPoints(keyPoints.points.map((q) => (q.id === id ? { ...q, name: name.slice(0, 24) } : q)));
-  },
+/** Put the objective being placed at a world floor point (moving it if it's already on the map). */
+function dropObjective(at: { x: number; z: number }) {
+  const slot = placingObjective!;
+  const o = mapOrigin(game.map);
+  const old = objectives.points.find((p) => p.id === slot.id);
+  const point: MapObjective = {
+    id: slot.id, kind: slot.kind, ...(slot.team ? { team: slot.team } : {}), name: slot.name,
+    x: at.x - o.x, y: at.z - o.z, r: old?.r ?? slot.r,
+  };
+  setPoints([...objectives.points.filter((p) => p.id !== slot.id), point]);
+  feed.push(`${slot.name} ${old ? "moved" : "placed"}`, slot.team ? TEAM_COLORS[slot.team] : "#ffd34d");
+  stopPlacingObjective();
+}
+
+const objectiveActions = {
+  place: (id: string) => (placingObjective?.id === id ? stopPlacingObjective() : startPlacingObjective(id)),
   resize: (id: string, delta: number) => {
     const clamp = (r: number) => Math.min(POINT_RADIUS.max, Math.max(POINT_RADIUS.min, r));
-    setPoints(keyPoints.points.map((q) => (q.id === id ? { ...q, r: clamp(q.r + delta) } : q)));
+    setPoints(objectives.points.map((q) => (q.id === id ? { ...q, r: clamp(q.r + delta) } : q)));
   },
-  remove: (id: string) => setPoints(keyPoints.points.filter((q) => q.id !== id)),
+  remove: (id: string) => setPoints(objectives.points.filter((q) => q.id !== id)),
 };
-
-document.querySelector<HTMLButtonElement>("#point-add")!.onclick = () =>
-  addingPoint ? stopAddingPoint() : startAddingPoint();
 
 let downAt: { x: number; y: number } | null = null;
 canvas.addEventListener("pointerdown", (e) => (downAt = { x: e.clientX, y: e.clientY }));
 canvas.addEventListener("click", (e) => {
   const dragged = downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4;
   if (controls.mode !== "overview" || dragged) return;
-  if (addingPoint) {
+  if (placingObjective) {
     const at = controls.floorAt(e.clientX, e.clientY);
-    if (!at) return;
-    const o = mapOrigin(game.map);
-    const name = nextPointName();
-    const id = `kp-${Date.now().toString(36)}`;
-    setPoints([...keyPoints.points, { id, name, x: at.x - o.x, y: at.z - o.z, r: POINT_RADIUS.start }]);
-    feed.push(`Key position ${name} added`, "#ffd34d");
-    stopAddingPoint();
+    if (at) dropObjective(at);
     return;
   }
   if (!placing) return;
@@ -599,11 +591,10 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     document.querySelector<HTMLElement>("#scoreboard")!.hidden = false;
   }
-  if (e.code === "Escape" && (placing || addingPoint)) {
+  if (e.code === "Escape" && (placing || placingObjective)) {
     placing = null;
-    stopAddingPoint();
+    stopPlacingObjective();
   }
-  if (e.code === "KeyK") addingPoint ? stopAddingPoint() : startAddingPoint();
   const n = Number(e.key);
   if (n >= 1 && n <= 9 && game.players[n - 1]) spectate(game.players[n - 1].id);
   if (e.code === "KeyP") {
@@ -624,9 +615,9 @@ window.addEventListener("blur", () => (document.querySelector<HTMLElement>("#sco
 
 controls.onModeChange = (mode) => {
   if (mode !== "follow") followId = null;
-  if (mode !== "overview" && (placing || addingPoint)) {
+  if (mode !== "overview" && (placing || placingObjective)) {
     placing = null;
-    stopAddingPoint();
+    stopPlacingObjective();
   }
   document.body.dataset.mode = mode;
 };
@@ -638,6 +629,10 @@ document.addEventListener("pointerlockchange", () => {
 const panelActions = {
   spectate,
   place: startPlacing,
+  respawn: (id: string) => {
+    const tag = game.players.find((p) => p.id === id)?.tag;
+    if (tag != null) combat.respawn(tag);
+  },
   remove: (id: string) => {
     if (confirm(`Forget ${nameOf(id)}?`)) game.remove(id);
   },
@@ -647,7 +642,7 @@ function refreshPlayers() {
   players.set(game.players);
   renderScoreboard(game.players, combat);
   renderPlayersPanel(game.players, combat, selectedId, game.connected, panelActions);
-  renderMatchPanel(combat, game.players);
+  renderMatchPanel(combat, game.players, objectives.points);
 }
 
 game.onStatus = (up) => {
@@ -656,7 +651,7 @@ game.onStatus = (up) => {
 };
 game.onMap = () => {
   syncGameMap();
-  keyPoints.update(players.poses());
+  objectives.update(combat.objectives);
 };
 game.onPlayers = (list) => {
   feed.diff(list);
@@ -667,6 +662,7 @@ game.onPlayers = (list) => {
 // ---- Shooting: hit points, shots and the match ------------------------------------------------
 
 const tagName = (tag: number) => players.byTag(tag)?.player.name ?? `P${tag}`;
+const teamText = (t: Team) => TEAM_NAMES[t];
 
 combat.onStatus = (up) => {
   feed.push(up ? "Connected to the shooting server" : "Shooting server offline", up ? "#3ccf8e" : "#ff5c6c");
@@ -689,13 +685,32 @@ combat.onShot = (shot) => {
   );
 };
 combat.onMatch = (started, scores) => {
-  if (started) feed.push("Match started: guns are live", "#ffd34d");
-  else if (scores) {
-    const result = scores.winner === "tie" ? "it's a tie" : `${scores.winner} wins`;
-    feed.push(`Match over: ${result} (${scores.red_kills}–${scores.blue_kills})`, "#ffd34d");
+  if (started) {
+    const flag = objectives.points.some((p) => p.kind === "flag");
+    feed.push(flag ? `Match started: hold the flag ${clock(winSeconds())} to win` : "Match started: guns are live", "#ffd34d");
+  } else if (scores) {
+    const result = scores.winner === "tie" ? "it's a tie" : `${teamText(scores.winner)} wins`;
+    const how = scores.flag
+      ? `flag ${clock(scores.red_flag_s)}–${clock(scores.blue_flag_s)}, kills ${scores.red_kills}–${scores.blue_kills}`
+      : `${scores.red_kills}–${scores.blue_kills}`;
+    feed.push(`Match over: ${result}${scores.reason === "flag" ? " on the flag" : ""} (${how})`, "#ffd34d");
   }
 };
-document.querySelector<HTMLButtonElement>("#match-start")!.onclick = () => combat.start();
+combat.onFlag = ({ team, from }) =>
+  feed.push(`${teamText(team)} took the flag${from ? ` from ${teamText(from)}` : ""}`, TEAM_COLORS[team]);
+combat.onRespawn = ({ player_id, how }) => {
+  const who = players.byTag(player_id)?.player;
+  const color = who ? playerColor(who) : "#fff";
+  const name = tagName(player_id);
+  feed.push(how === "base" ? `${name} is back in at base` : how === "host" ? `${name} brought back in by the host` : `${name} is back in`, color);
+};
+
+/** Flag time to win, from the Match panel (minutes). */
+function winSeconds() {
+  const min = Number(document.querySelector<HTMLInputElement>("#match-win")!.value);
+  return Number.isFinite(min) && min > 0 ? Math.round(min * 60) : 120;
+}
+document.querySelector<HTMLButtonElement>("#match-start")!.onclick = () => combat.start(winSeconds());
 document.querySelector<HTMLButtonElement>("#match-stop")!.onclick = () => {
   if (confirm("End the match?")) combat.stop();
 };
@@ -719,8 +734,8 @@ renderer.setAnimationLoop((now) => {
 
   players.hiddenId = controls.mode === "follow" && !controls.thirdPerson ? followId : null;
   players.animate(dt, controls.camera, canvas.clientWidth, canvas.clientHeight);
-  keyPoints.setOverview(controls.mode === "overview");
-  keyPoints.animate(controls.camera, canvas.clientWidth, canvas.clientHeight);
+  objectives.setOverview(controls.mode === "overview");
+  objectives.animate(controls.camera, canvas.clientWidth, canvas.clientHeight);
   tracers.animate(dt);
   renderer.render(scene, controls.camera);
 
@@ -728,12 +743,12 @@ renderer.setAnimationLoop((now) => {
   const blips = players.poses();
   if (controls.mode !== "overview") {
     drawCompass(view, blips);
-    minimap.draw(view, blips, players.hiddenId, keyPoints.holders());
+    minimap.draw(view, blips, players.hiddenId, objectives.points, combat.objectives);
   }
   if (now - hudAt > 200) {
     hudAt = now;
-    keyPoints.update(blips);
-    renderPointsPanel(keyPoints.holders(), addingPoint, pointActions);
+    objectives.update(combat.objectives);
+    renderObjectivesPanel(objectives.points, combat.objectives, placingObjective?.id ?? null, objectiveActions);
     const mode = controls.mode === "follow"
       ? `Watching ${nameOf(followId ?? "")}${controls.thirdPerson ? " (shoulder)" : ""}`
       : { walk: "Walk", fly: "Fly", overview: "Map" }[controls.mode];

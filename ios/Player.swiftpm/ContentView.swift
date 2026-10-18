@@ -151,7 +151,7 @@ struct ContentView: View {
                 Text("#\(tag) \(team.capitalized)").font(.footnote.bold()).foregroundStyle(color)
                 Text(String(repeating: "♥", count: max(0, combat.hp)) + String(repeating: "♡", count: max(0, combat.maxHp - combat.hp)))
                     .foregroundStyle(Color(red: 1, green: 0.42, blue: 0.5))
-                Text(combat.alive ? gunText : "DOWN").font(.footnote.bold())
+                Text(combat.alive ? gunText : combat.respawnMode == "base" ? "DOWN · TO BASE" : "DOWN").font(.footnote.bold())
                     .foregroundStyle(combat.alive && combat.gun == "ready" ? TrailCanvas.green : TrailCanvas.yellow)
                 Spacer()
                 Text(combat.score).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)

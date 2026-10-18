@@ -3,7 +3,7 @@
 // Positions arrive ~20 times a second; avatars glide between updates. Players on a team wear
 // its colour; their shooting-server state (hit points, downed) shows on the avatar and its tag.
 import * as THREE from "three";
-import { type CombatLink, type Fighter, TEAM_COLORS, hearts } from "./combat.ts";
+import { type CombatLink, type Fighter, TEAM_COLORS, healthText } from "./combat.ts";
 import { type GameLink, type GamePlayer, colorFor, headingToYaw } from "./game.ts";
 
 const SMOOTHING = 15; // 1/s
@@ -207,7 +207,7 @@ export class PlayerLayer {
       const dist = Math.hypot(a.pose.x - camPos.x, a.pose.z - camPos.z);
       const p = a.player;
       const f = a.fighter;
-      const health = !f ? "" : f.alive ? `${hearts(f)} · ` : `DOWN ${Math.ceil(f.seconds_to_respawn)}s · `;
+      const health = !f ? "" : f.alive ? `${healthText(f)} · ` : `${healthText(f).toUpperCase()} · `;
       const meta = `${health}${dist.toFixed(1)} m${(p.spread ?? 0) > 1.5 ? ` · ±${p.spread!.toFixed(1)}` : ""}`;
       if (a.nameEl.textContent !== p.name) a.nameEl.textContent = p.name;
       if (a.metaEl.textContent !== meta) a.metaEl.textContent = meta;

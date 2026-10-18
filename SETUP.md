@@ -60,6 +60,20 @@ First time only, on the iPhone:
 
 Apps signed with a free Apple ID stop opening after 7 days. Run them from Xcode again to fix that.
 
+> **Don't commit your signing settings.** Choosing your Team or changing the bundle ID in Xcode
+> edits a checked-in file (for HTS Player: `ios/Player.swiftpm/Package.swift`, which stores
+> `teamIdentifier` and `bundleIdentifier`). Pushing that breaks everyone else's build. Tell git to
+> ignore your local edits to it, once per clone:
+>
+> ```sh
+> git update-index --skip-worktree ios/Player.swiftpm/Package.swift
+> ```
+>
+> It then stays out of `git status`, `git add -A` and `git commit -a`. Before pulling a teammate's
+> real change to that file, undo it with `git update-index --no-skip-worktree ios/Player.swiftpm/Package.swift`,
+> pull, and set your Team again. (The scanner app has the same issue in
+> `app-ios/HackTheSkies.xcodeproj/project.pbxproj`: use the same command on that file.)
+
 A LiDAR iPhone (12 Pro or newer Pro) gives the best scans; other iPhones still work.
 
 ## Every session

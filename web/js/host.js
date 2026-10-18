@@ -1,4 +1,4 @@
-import { MapView, colorFor, connect } from './mapview.js';
+import { MapView, connect, playerColor } from './mapview.js';
 
 const $ = (id) => document.getElementById(id);
 const view = new MapView($('map'));
@@ -240,7 +240,7 @@ function renderPlayers() {
     const sensors = `${p.platform} · ${p.source}${p.compass ? ' · compass' : ''}`;
     return `<div class="player ${p.id === selectedId ? 'sel' : ''}" data-id="${p.id}">
       <div class="top"><span class="dot ${p.connected ? 'on' : ''}"></span>
-        <span class="swatch" style="background:${colorFor(p.id)}"></span>${escapeHtml(p.name)}
+        <span class="swatch" style="background:${playerColor(p)}"></span>${escapeHtml(p.name)}
         <button data-remove="${p.id}" title="Forget this player">✕</button></div>
       <div class="muted">${escapeHtml(sensors)}</div>
       <div class="muted">${p.steps} steps · ${status}</div></div>`;

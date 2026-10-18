@@ -3,6 +3,9 @@
 // clockwise from map "up".
 
 const TEAM_COLORS = ['#e4572e', '#29b6f6', '#76b041', '#ffc914', '#b07bd6', '#ff8fab', '#17bebb', '#f0f0f0'];
+// Players on a red/blue team wear its colour (same as the 3D viewer's).
+const SIDE_COLORS = { red: '#ff4d5e', blue: '#4da3ff' };
+export const playerColor = (p) => SIDE_COLORS[p.team] || colorFor(p.id);
 
 export function colorFor(id) {
   let h = 0;
@@ -118,10 +121,31 @@ export class MapView {
       ctx.stroke();
     });
 
+    this.drawPoints();
     for (const p of this.players) this.drawPlayer(p);
     ctx.restore();
 
     if (this.overlay) this.overlay(ctx, this);
+  }
+
+  // Key positions the host marked in the 3D viewer: capture circle + name.
+  drawPoints() {
+    const { ctx, scale: s } = this;
+    for (const p of this.map.points || []) {
+      ctx.beginPath();
+      ctx.arc(p.x * s, p.y * s, p.r * s, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 211, 77, 0.12)';
+      ctx.fill();
+      ctx.strokeStyle = '#ffd34d';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#ffd34d';
+      ctx.font = '700 13px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.name, p.x * s, p.y * s);
+      ctx.textBaseline = 'alphabetic';
+    }
   }
 
   drawGrid() {
@@ -137,7 +161,7 @@ export class MapView {
 
   drawPlayer(p) {
     const { ctx, scale: s } = this;
-    const color = colorFor(p.id);
+    const color = playerColor(p);
 
     if (this.showParticles && p.particles) {
       ctx.fillStyle = color;

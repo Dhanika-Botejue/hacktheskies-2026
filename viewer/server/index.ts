@@ -20,6 +20,13 @@ const SPLAT_EXTS = [".ply", ".spz", ".splat", ".ksplat", ".sog"];
 // Python game server (run.py): tracks the players. Proxied under /game/ so the viewer reaches it
 // on its own origin, without tripping over the game server's self-signed certificate.
 const GAME_SERVER = new URL(process.env.GAME_SERVER ?? "https://127.0.0.1:8443");
+// Shooting server (combat/server.py, started by run.py): HP, kills and shots. Proxied under /combat/.
+const COMBAT_SERVER = new URL(process.env.COMBAT_SERVER ?? "http://127.0.0.1:8765");
+const UPSTREAMS = [
+  { prefix: "/game", url: GAME_SERVER },
+  { prefix: "/combat", url: COMBAT_SERVER },
+];
+const upstreamFor = (url = "") => UPSTREAMS.find((u) => url.startsWith(`${u.prefix}/`));
 
 function lanAddress() {
   const ifaces = os.networkInterfaces();
@@ -189,35 +196,37 @@ async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, ur
   json(res, 404, { error: "not found" });
 }
 
-// ---- Game server proxy ----------------------------------------------------------------------
+// ---- Game and shooting server proxy ---------------------------------------------------------
 
-function gameRequest(req: http.IncomingMessage) {
-  const lib = GAME_SERVER.protocol === "https:" ? https : http;
+type Upstream = (typeof UPSTREAMS)[number];
+
+function upstreamRequest(target: Upstream, req: http.IncomingMessage) {
+  const lib = target.url.protocol === "https:" ? https : http;
   return lib.request({
-    hostname: GAME_SERVER.hostname,
-    port: GAME_SERVER.port,
-    path: req.url!.slice("/game".length) || "/",
+    hostname: target.url.hostname,
+    port: target.url.port,
+    path: req.url!.slice(target.prefix.length) || "/",
     method: req.method,
-    headers: { ...req.headers, host: GAME_SERVER.host },
+    headers: { ...req.headers, host: target.url.host },
     rejectUnauthorized: false, // run.py's self-signed certificate
   });
 }
 
-function proxyGame(req: http.IncomingMessage, res: http.ServerResponse) {
-  const upstream = gameRequest(req);
+function proxy(target: Upstream, req: http.IncomingMessage, res: http.ServerResponse) {
+  const upstream = upstreamRequest(target, req);
   upstream.on("response", (up) => {
     res.writeHead(up.statusCode ?? 502, up.headers);
     up.pipe(res);
   });
   upstream.on("error", () => {
-    if (!res.headersSent) json(res, 502, { error: `game server not reachable at ${GAME_SERVER.origin}` });
+    if (!res.headersSent) json(res, 502, { error: `server not reachable at ${target.url.origin}` });
     else res.destroy();
   });
   req.pipe(upstream);
 }
 
-function proxyGameSocket(req: http.IncomingMessage, socket: Duplex, head: Buffer) {
-  const upstream = gameRequest(req);
+function proxySocket(target: Upstream, req: http.IncomingMessage, socket: Duplex, head: Buffer) {
+  const upstream = upstreamRequest(target, req);
   upstream.on("upgrade", (up, upSocket, upHead) => {
     const lines = [`HTTP/1.1 101 Switching Protocols`];
     for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`);
@@ -257,17 +266,20 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname.startsWith("/maps/")) return serveMapFile(res, decodeURIComponent(url.pathname.slice(6)));
-  if (url.pathname.startsWith("/game/")) return proxyGame(req, res);
+  const target = upstreamFor(url.pathname);
+  if (target) return proxy(target, req, res);
   vite.middlewares(req, res);
 });
 
 server.on("upgrade", (req, socket, head) => {
-  if (req.url?.startsWith("/game/")) proxyGameSocket(req, socket, head);
+  const target = upstreamFor(req.url);
+  if (target) proxySocket(target, req, socket, head);
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`\n  Viewer:          http://localhost:${PORT}`);
   console.log(`  Phone app URL:   ${serverUrl}`);
-  console.log(`  Game server:     ${GAME_SERVER.origin} (proxied at /game/)\n`);
+  console.log(`  Game server:     ${GAME_SERVER.origin} (proxied at /game/)`);
+  console.log(`  Shooting server: ${COMBAT_SERVER.origin} (proxied at /combat/)\n`);
   resumeInterruptedTraining();
 });

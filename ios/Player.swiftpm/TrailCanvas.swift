@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Top-down drawing of the walked path. Same look as web/js/trailview.js.
+/// Top-down drawing of the walked path. Same look as web/js/trailview.js, but heading-up:
+/// the map turns around you so your arrow always points to the top of the screen.
 struct TrailCanvas: View {
     var path: [TrailPoint]
     var pos: TrailPoint
@@ -16,34 +17,43 @@ struct TrailCanvas: View {
             let w = size.width, h = size.height
             let points = path + [pos]
 
+            // Turn the map by -heading so the way you face is up.
+            let turn = (heading ?? 0) * .pi / 180
+            func rotated(_ p: TrailPoint) -> TrailPoint {
+                TrailPoint(x: p.x * cos(turn) + p.y * sin(turn), y: -p.x * sin(turn) + p.y * cos(turn))
+            }
+
             // Follow the walker, or fit the whole path (at least 8 m across).
             let cx: Double, cy: Double, scale: Double
             if follow {
-                cx = pos.x
-                cy = pos.y
+                let me = rotated(pos)
+                cx = me.x
+                cy = me.y
                 scale = min(w, h) / 12
             } else {
-                let minX = points.map(\.x).min()!, maxX = points.map(\.x).max()!
-                let minY = points.map(\.y).min()!, maxY = points.map(\.y).max()!
+                let turned = points.map(rotated)
+                let minX = turned.map(\.x).min()!, maxX = turned.map(\.x).max()!
+                let minY = turned.map(\.y).min()!, maxY = turned.map(\.y).max()!
                 cx = (minX + maxX) / 2
                 cy = (minY + maxY) / 2
                 scale = min(w / max(8, maxX - minX + 2), h / max(8, maxY - minY + 2))
             }
             func screen(_ p: TrailPoint) -> CGPoint {
-                CGPoint(x: w / 2 + (p.x - cx) * scale, y: h / 2 + (p.y - cy) * scale)
+                let r = rotated(p)
+                return CGPoint(x: w / 2 + (r.x - cx) * scale, y: h / 2 + (r.y - cy) * scale)
             }
 
-            // 1 m grid
+            // 1 m grid, long enough to cover the screen at any rotation
+            let center = TrailPoint(x: cx * cos(turn) - cy * sin(turn), y: cx * sin(turn) + cy * cos(turn))
+            let reach = hypot(w, h) / 2 / scale + 1
             var grid = Path()
-            for gx in Int(floor(cx - w / 2 / scale))...Int(ceil(cx + w / 2 / scale)) {
-                let sx = screen(TrailPoint(x: Double(gx), y: 0)).x
-                grid.move(to: CGPoint(x: sx, y: 0))
-                grid.addLine(to: CGPoint(x: sx, y: h))
+            for gx in Int(floor(center.x - reach))...Int(ceil(center.x + reach)) {
+                grid.move(to: screen(TrailPoint(x: Double(gx), y: center.y - reach)))
+                grid.addLine(to: screen(TrailPoint(x: Double(gx), y: center.y + reach)))
             }
-            for gy in Int(floor(cy - h / 2 / scale))...Int(ceil(cy + h / 2 / scale)) {
-                let sy = screen(TrailPoint(x: 0, y: Double(gy))).y
-                grid.move(to: CGPoint(x: 0, y: sy))
-                grid.addLine(to: CGPoint(x: w, y: sy))
+            for gy in Int(floor(center.y - reach))...Int(ceil(center.y + reach)) {
+                grid.move(to: screen(TrailPoint(x: center.x - reach, y: Double(gy))))
+                grid.addLine(to: screen(TrailPoint(x: center.x + reach, y: Double(gy))))
             }
             ctx.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 1)
 
@@ -60,9 +70,9 @@ struct TrailCanvas: View {
                 ctx.fill(Path(ellipseIn: CGRect(x: s.x - 6, y: s.y - 6, width: 12, height: 12)), with: .color(Self.green))
             }
 
-            // You + facing direction
-            if let heading {
-                let me = screen(pos), a = heading * .pi / 180, r = 9.0
+            // You, always facing up
+            if heading != nil {
+                let me = screen(pos), a = 0.0, r = 9.0
                 var arrow = Path()
                 arrow.move(to: CGPoint(x: me.x + sin(a) * r * 2.4, y: me.y - cos(a) * r * 2.4))
                 arrow.addLine(to: CGPoint(x: me.x + sin(a + 2.4) * r, y: me.y - cos(a + 2.4) * r))
